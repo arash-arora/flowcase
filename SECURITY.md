@@ -9,3 +9,9 @@ Please provide:
 - Environment details (OS, browser, Docker versions, etc.)
 
 We will provide updates and will keep this issue private until it's resolved.
+
+Username: admin
+Password: 58qNr5GWvWinfAx7
+-----------------------
+Username: user
+Password: MWPCRCDNEN6EftFL

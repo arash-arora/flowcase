@@ -14,6 +14,31 @@ import utils.docker
 
 admin_bp = Blueprint('admin', __name__)
 
+@admin_bp.route('/docker/networks', methods=['GET'])
+@login_required
+def api_admin_docker_networks():
+	if not Permissions.check_permission(current_user.id, Permissions.VIEW_DROPLETS):
+		return jsonify({"success": False, "error": "Unauthorized"}), 403
+
+	if not utils.docker.is_docker_available():
+		return jsonify({
+			"success": False,
+			"error": "Docker service is not available"
+		}), 503
+
+	try:
+		networks = utils.docker.docker_client.networks.list()
+		network_names = [net.name for net in networks]
+		return jsonify({
+			"success": True,
+			"networks": network_names
+		})
+	except Exception as e:
+		return jsonify({
+			"success": False,
+			"error": f"Failed to retrieve networks: {str(e)}"
+		}), 500
+
 @admin_bp.route('/system_info', methods=['GET'])
 @login_required
 def api_admin_system():
@@ -157,7 +182,9 @@ def api_admin_droplets():
 			"server_ip": droplet.server_ip,
 			"server_port": droplet.server_port,
 			"server_username": droplet.server_username,
-			"server_password": "********************************" if droplet.server_password else None
+			"server_password": "********************************" if droplet.server_password else None,
+			"allowed_groups": droplet.allowed_groups if droplet.allowed_groups else "",
+			"docker_network": droplet.docker_network or 'flowcase_default_network'
 		})
  
 	return jsonify(response)
@@ -245,6 +272,17 @@ def api_admin_edit_droplet():
   
 		droplet.container_cores = 1
 		droplet.container_memory = 1024
+  
+	# Handle allowed groups - convert array to comma-separated string
+	allowed_groups = request.json.get('allowed_groups', [])
+	if allowed_groups and isinstance(allowed_groups, list):
+		droplet.allowed_groups = ','.join(allowed_groups) if allowed_groups else None
+	else:
+		droplet.allowed_groups = None
+
+	# Handle docker network assignment
+	docker_network = request.json.get('docker_network')
+	droplet.docker_network = docker_network or 'flowcase_default_network'
   
 	if create_new:
 		db.session.add(droplet)

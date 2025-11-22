@@ -29,4 +29,49 @@ class Permissions:
 
 			if getattr(group, permission):
 				return True
-		return False 
+		return False
+
+	@staticmethod
+	def user_in_groups(userid, allowed_groups_csv):
+		"""
+		Check if a user belongs to any of the allowed groups.
+		
+		Args:
+			userid: User ID to check
+			allowed_groups_csv: Comma-separated string of group IDs, or empty/None for public access
+			
+		Returns:
+			True if user is in any allowed group, or if allowed_groups_csv is empty/None (public)
+		"""
+		# If allowed_groups is empty or None, droplet is public
+		if not allowed_groups_csv or allowed_groups_csv.strip() == "":
+			return True
+		
+		from models.user import User, Group
+		
+		user = User.query.filter_by(id=userid).first()
+		if not user:
+			return False
+		
+		# Get user's group IDs
+		user_groups = set(g for g in [g.strip() for g in user.groups.split(",")] if g)
+		
+		# Parse allowed groups tokens and normalize them to IDs where possible.
+		allowed_tokens = [t.strip() for t in allowed_groups_csv.split(",") if t.strip()]
+		allowed_ids = set()
+		for token in allowed_tokens:
+			# Try to find group by id first
+			group = Group.query.filter_by(id=token).first()
+			if group:
+				allowed_ids.add(group.id)
+				continue
+			# Fall back to matching by display_name (case-sensitive as stored)
+			group = Group.query.filter_by(display_name=token).first()
+			if group:
+				allowed_ids.add(group.id)
+			else:
+				# If token doesn't match any group, add the raw token so we still support legacy values
+				allowed_ids.add(token)
+		
+		# Check if user is in any allowed group
+		return bool(user_groups & allowed_ids)

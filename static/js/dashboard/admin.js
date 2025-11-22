@@ -140,31 +140,34 @@ function AdminChangeTab(tab, element = null)
 			header.innerText = "Droplets";
 			subtext.innerText = "View and manage droplets.";
 
-			FetchAdminDroplets(function(json) {
-				content.innerHTML = `
-					${userInfo.permissions.perm_edit_droplets ? `
-						<button class="button-1-full" onclick="ShowEditDroplet()">Create Droplet</button>
-						<hr>
-					` : ''}
+			// Fetch groups first so they're available when showing edit droplet form
+			FetchAdminGroups(function(groupsJson) {
+				FetchAdminDroplets(function(json) {
+					content.innerHTML = `
+						${userInfo.permissions.perm_edit_droplets ? `
+							<button class="button-1-full" onclick="ShowEditDroplet()">Create Droplet</button>
+							<hr>
+						` : ''}
 
-				<table class="admin-modal-table">
-					<tr>
-						<th>Name</th>
-						<th>Image / IP</th>
-						${userInfo.permissions.perm_edit_droplets ? `<th>Actions</th>` : ''}
-					</tr>
-					${json["droplets"].map(droplet => `
+					<table class="admin-modal-table">
 						<tr>
-							<td><div><img src="${droplet.image_path ? droplet.image_path : '/static/img/droplet_default.jpg'}"><p>${droplet.display_name}</p></div></td>
-							<td>${droplet.droplet_type == "container" ? droplet.container_docker_image : droplet.server_ip}</td>
-							${userInfo.permissions.perm_edit_droplets ? `<td class="admin-modal-table-actions">
-								<i class="fas fa-edit" onclick="ShowEditDroplet('${droplet.id}')"></i>
-								<i class="fas fa-trash" onclick="AdminDeleteDroplet('${droplet.id}')"></i>
-							</td>` : ''}
+							<th>Name</th>
+							<th>Image / IP</th>
+							${userInfo.permissions.perm_edit_droplets ? `<th>Actions</th>` : ''}
 						</tr>
-					`).join('')}
-				</table>
-				`;
+						${json["droplets"].map(droplet => `
+							<tr>
+								<td><div><img src="${droplet.image_path ? droplet.image_path : '/static/img/droplet_default.jpg'}"><p>${droplet.display_name}</p></div></td>
+								<td>${droplet.droplet_type == "container" ? droplet.container_docker_image : droplet.server_ip}</td>
+								${userInfo.permissions.perm_edit_droplets ? `<td class="admin-modal-table-actions">
+									<i class="fas fa-edit" onclick="ShowEditDroplet('${droplet.id}')"></i>
+									<i class="fas fa-trash" onclick="AdminDeleteDroplet('${droplet.id}')"></i>
+								</td>` : ''}
+							</tr>
+						`).join('')}
+					</table>
+					`;
+				});
 			});
 			break;
 		case 'registry':
@@ -659,6 +662,33 @@ function FetchAdminGroups(callback)
 	console.log("Retrieving groups...");
 }
 
+function FetchDockerNetworks(callback)
+{
+	var url = "/api/admin/docker/networks";
+	var xhr = new XMLHttpRequest();
+	xhr.open("GET", url, true);
+	xhr.setRequestHeader("Content-Type", "application/json");
+	xhr.onreadystatechange = function () {
+		if (xhr.readyState === 4) {
+			var json = JSON.parse(xhr.responseText);
+			if (json["success"] == true) {
+				callback(json["networks"]);
+			}
+			else
+			{
+				if (json["error"] != null) {
+					console.log("Failed to fetch networks: " + json["error"]);
+				}
+				// Return default network on error
+				callback(['flowcase_default_network']);
+			}
+		}
+	};
+	xhr.send();
+
+	console.log("Retrieving Docker networks...");
+}
+
 function FetchAdminRegistry(callback)
 {
 	var url = "/api/admin/registry";
@@ -1098,6 +1128,20 @@ function ShowEditDroplet(instance_id = null)
 		</select>
 	</div>
 
+	<div class="admin-modal-card">
+		<p>Allowed Groups (Leave empty for public access)</p>
+		<div id="admin-edit-droplet-allowed-groups" style="display: flex; flex-direction: column; gap: 8px;">
+			<!-- Groups will be populated here -->
+		</div>
+	</div>
+
+	<div class="admin-modal-card" id="admin-droplet-network-section" style="display: none;">
+		<p>Docker Network</p>
+		<select id="admin-edit-droplet-network">
+			<option value="">Loading networks...</option>
+		</select>
+	</div>
+
 	<div id="admin-droplet-edit-container-only">
 		<div class="admin-modal-card">
 			<p>Docker Registry <span class="required">*</span></p>
@@ -1151,6 +1195,42 @@ function ShowEditDroplet(instance_id = null)
 	`;
 
 	ChangeDropletType();
+
+	// Populate allowed groups with checkboxes
+	const groupsContainer = document.getElementById('admin-edit-droplet-allowed-groups');
+	const allowedGroupsStr = droplet ? droplet.allowed_groups : '';
+	const allowedGroupsArray = allowedGroupsStr ? allowedGroupsStr.split(',') : [];
+
+	admin_groups.forEach(group => {
+		const isChecked = allowedGroupsArray.includes(group.id);
+		const checkbox = document.createElement('label');
+		checkbox.style.display = 'flex';
+		checkbox.style.alignItems = 'center';
+		checkbox.style.gap = '8px';
+		checkbox.style.cursor = 'pointer';
+		checkbox.innerHTML = `
+			<input type="checkbox" value="${group.id}" ${isChecked ? 'checked' : ''} class="admin-edit-droplet-group-checkbox">
+			<span>${group.display_name}</span>
+		`;
+		groupsContainer.appendChild(checkbox);
+	});
+
+	// Fetch and populate available Docker networks (only for container type)
+	FetchDockerNetworks(function(networks) {
+		const networkSelect = document.getElementById('admin-edit-droplet-network');
+		networkSelect.innerHTML = '';
+		const currentNetwork = droplet ? droplet.docker_network || 'flowcase_default_network' : 'flowcase_default_network';
+		
+		networks.forEach(net => {
+			const option = document.createElement('option');
+			option.value = net;
+			option.textContent = net;
+			if (net === currentNetwork) {
+				option.selected = true;
+			}
+			networkSelect.appendChild(option);
+		});
+	});
 }
 
 function ChangeDropletType()
@@ -1159,13 +1239,16 @@ function ChangeDropletType()
 
 	var containerOnly = document.getElementById('admin-droplet-edit-container-only');
 	var serverOnly = document.getElementById('admin-droplet-edit-server-only');
+	var networkSection = document.getElementById('admin-droplet-network-section');
 
 	if (type == "container") {
 		containerOnly.style.display = "block";
 		serverOnly.style.display = "none";
+		networkSection.style.display = "block";
 	} else {
 		containerOnly.style.display = "none";
 		serverOnly.style.display = "block";
+		networkSection.style.display = "none";
 	}
 }
 
@@ -1243,7 +1326,9 @@ function SaveDroplet(droplet_id = null)
 		"server_ip": document.getElementById('admin-edit-droplet-ip-address').value,
 		"server_port": document.getElementById('admin-edit-droplet-port').value,
 		"server_username": document.getElementById('admin-edit-droplet-username').value,
-		"server_password": document.getElementById('admin-edit-droplet-password').value
+		"server_password": document.getElementById('admin-edit-droplet-password').value,
+		"allowed_groups": Array.from(document.querySelectorAll('.admin-edit-droplet-group-checkbox:checked')).map(cb => cb.value),
+		"docker_network": document.getElementById('admin-edit-droplet-network').value
 	});
 	xhr.send(data);
 

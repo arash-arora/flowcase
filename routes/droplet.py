@@ -48,6 +48,7 @@ droplet_bp = Blueprint('droplet', __name__)
 @droplet_bp.route('/api/droplets', methods=['GET'])
 @login_required
 def get_droplets():
+	from utils.permissions import Permissions
 	droplets = Droplet.query.all()
 	droplets = sorted(droplets, key=lambda x: x.display_name)
  
@@ -57,6 +58,10 @@ def get_droplets():
 	}
  
 	for droplet in droplets:
+		# Check if user has access to this droplet based on group membership
+		if not Permissions.user_in_groups(current_user.id, droplet.allowed_groups):
+			continue
+		
 		response["droplets"].append({
 			"id": droplet.id,
 			"display_name": droplet.display_name,
@@ -109,10 +114,15 @@ def get_instances():
 @droplet_bp.route('/api/instance/request', methods=['POST'])
 @login_required
 def request_new_instance():
+	from utils.permissions import Permissions
 	droplet_id = request.json.get('droplet_id')
 	droplet = Droplet.query.filter_by(id=droplet_id).first()
 	if not droplet:
 		return jsonify({"success": False, "error": "Droplet not found"}), 404
+
+	# Check if user has access to this droplet based on group membership
+	if not Permissions.user_in_groups(current_user.id, droplet.allowed_groups):
+		return jsonify({"success": False, "error": "You do not have access to this droplet"}), 403
 
 	# Check if droplet is a guacamole droplet
 	isGuacDroplet: bool = False
@@ -229,13 +239,16 @@ def request_new_instance():
 	
 	# Create the container
 	try:
+		# Get the network from the droplet assignment (default to 'flowcase_default_network')
+		docker_network = droplet.docker_network or 'flowcase_default_network'
+		
 		if not isGuacDroplet:
 			container = utils.docker.docker_client.containers.run(
 				image=image_name,
 				name=name,
 				environment={"DISPLAY": ":1", "VNC_PW": current_user.auth_token, "VNC_RESOLUTION": resolution},
 				detach=True,
-				network="flowcase_default_network",
+				network=docker_network,
 				mem_limit=f"{droplet.container_memory}000000",
 				cpu_shares=int(droplet.container_cores * 1024),
 				mounts=[mount] if mount else None,
@@ -246,7 +259,7 @@ def request_new_instance():
 				name=name,
 				environment={"GUAC_KEY": current_user.auth_token[:32]},
 				detach=True,
-				network="flowcase_default_network",
+				network=docker_network,
 			)
  
 		log("INFO", f"Instance created for user {current_user.username} with droplet {droplet.display_name}")
@@ -301,14 +314,20 @@ def request_new_instance():
 		try:
 			container = utils.docker.docker_client.containers.get(f"flowcase_generated_{instance.id}")
 			networks = container.attrs['NetworkSettings']['Networks']
+			docker_network = droplet.docker_network or 'flowcase_default_network'
 			
-			# Try different network name variations
+			# Try to find IP on the assigned network
 			ip = None
-			for network_name in ['flowcase_default_network', 'default_network', 'bridge']:
-				if network_name in networks and networks[network_name]['IPAddress']:
-					ip = networks[network_name]['IPAddress']
-					log("INFO", f"Found container IP {ip} on network {network_name}")
-					break
+			if docker_network in networks and networks[docker_network]['IPAddress']:
+				ip = networks[docker_network]['IPAddress']
+				log("INFO", f"Found container IP {ip} on network {docker_network}")
+			else:
+				# Fallback: try other common network names
+				for network_name in ['flowcase_default_network', 'default_network', 'bridge']:
+					if network_name in networks and networks[network_name]['IPAddress']:
+						ip = networks[network_name]['IPAddress']
+						log("INFO", f"Found container IP {ip} on fallback network {network_name}")
+						break
 			
 			if not ip:
 				log("ERROR", f"Could not find IP address for container {name}")
