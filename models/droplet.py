@@ -18,7 +18,6 @@ class Droplet(db.Model):
 	server_username = db.Column(db.String(255), nullable=True)
 	server_password = db.Column(db.String(255), nullable=True)
 	allowed_groups = db.Column(db.Text, nullable=True)
-	docker_network = db.Column(db.String(255), nullable=True, default='flowcase_default_network')
  
 class DropletInstance(db.Model):
 	id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))

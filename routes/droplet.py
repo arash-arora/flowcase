@@ -239,16 +239,13 @@ def request_new_instance():
 	
 	# Create the container
 	try:
-		# Get the network from the droplet assignment (default to 'flowcase_default_network')
-		docker_network = droplet.docker_network or 'flowcase_default_network'
-		
 		if not isGuacDroplet:
 			container = utils.docker.docker_client.containers.run(
 				image=image_name,
 				name=name,
 				environment={"DISPLAY": ":1", "VNC_PW": current_user.auth_token, "VNC_RESOLUTION": resolution},
 				detach=True,
-				network=docker_network,
+				network="flowcase_default_network",
 				mem_limit=f"{droplet.container_memory}000000",
 				cpu_shares=int(droplet.container_cores * 1024),
 				mounts=[mount] if mount else None,
@@ -259,7 +256,7 @@ def request_new_instance():
 				name=name,
 				environment={"GUAC_KEY": current_user.auth_token[:32]},
 				detach=True,
-				network=docker_network,
+				network="flowcase_default_network",
 			)
  
 		log("INFO", f"Instance created for user {current_user.username} with droplet {droplet.display_name}")
@@ -310,27 +307,18 @@ def request_new_instance():
 			db.session.commit()
 			return jsonify({"success": False, "error": "Container startup timed out"}), 500
  
-		# Create nginx config - get fresh container info and handle network name variations
+		# Create nginx config - get fresh container info
 		try:
 			container = utils.docker.docker_client.containers.get(f"flowcase_generated_{instance.id}")
 			networks = container.attrs['NetworkSettings']['Networks']
-			docker_network = droplet.docker_network or 'flowcase_default_network'
 			
-			# Try to find IP on the assigned network
+			# Get IP from flowcase_default_network
 			ip = None
-			if docker_network in networks and networks[docker_network]['IPAddress']:
-				ip = networks[docker_network]['IPAddress']
-				log("INFO", f"Found container IP {ip} on network {docker_network}")
-			else:
-				# Fallback: try other common network names
-				for network_name in ['flowcase_default_network', 'default_network', 'bridge']:
-					if network_name in networks and networks[network_name]['IPAddress']:
-						ip = networks[network_name]['IPAddress']
-						log("INFO", f"Found container IP {ip} on fallback network {network_name}")
-						break
+			if 'flowcase_default_network' in networks:
+				ip = networks['flowcase_default_network'].get('IPAddress')
 			
 			if not ip:
-				log("ERROR", f"Could not find IP address for container {name}")
+				log("ERROR", f"Could not find IP address for container {name} on flowcase_default_network")
 				container.remove(force=True)
 				db.session.delete(instance)
 				db.session.commit()
@@ -412,22 +400,50 @@ def check_resources(droplet: Droplet) -> Tuple[bool, str]:
 	return True, ""
 
 def generate_nginx_config(instance: DropletInstance, droplet: Droplet, ip: str, user: User) -> str:
-	authHeader = base64.b64encode(b'flowcase_user:' + user.auth_token.encode()).decode('utf-8')
-	 
-	if droplet.droplet_type == "container":
-		nginx_config = open(f"config/nginx/container_template.conf", "r").read()
-	else: # Guacamole droplet
-		nginx_config = open(f"config/nginx/guac_template.conf", "r").read()
-
-	nginx_config = nginx_config.replace("{ip}", ip)
-	nginx_config = nginx_config.replace("{authHeader}", authHeader)
-	nginx_config = nginx_config.replace("{instance_id}", instance.id)
-
-	return nginx_config
+	"""Generate nginx configuration for the instance."""
+	try:
+		authHeader = base64.b64encode(b'flowcase_user:' + user.auth_token.encode()).decode('utf-8')
+		
+		if droplet.droplet_type == "container":
+			template_path = f"config/nginx/container_template.conf"
+		else: # Guacamole droplet
+			template_path = f"config/nginx/guac_template.conf"
+		
+		log("INFO", f"Reading nginx template from {template_path}")
+		with open(template_path, "r") as f:
+			nginx_config = f.read()
+		
+		nginx_config = nginx_config.replace("{ip}", ip)
+		nginx_config = nginx_config.replace("{authHeader}", authHeader)
+		nginx_config = nginx_config.replace("{instance_id}", instance.id)
+		
+		log("INFO", f"Generated nginx config for instance {instance.id}: IP={ip}, type={droplet.droplet_type}")
+		return nginx_config
+	except FileNotFoundError as e:
+		log("ERROR", f"Nginx template file not found: {str(e)}")
+		raise
+	except Exception as e:
+		log("ERROR", f"Error generating nginx config: {str(e)}")
+		raise
 
 def write_nginx_config(instance: DropletInstance, nginx_config: str):
-	with open(f"/flowcase/nginx/containers.d/{instance.id}.conf", "w") as f:
-		f.write(nginx_config)
+	"""Write nginx configuration for the instance."""
+	nginx_dir = "/flowcase/nginx/containers.d"
+	config_file = f"{nginx_dir}/{instance.id}.conf"
+	
+	try:
+		# Ensure directory exists
+		os.makedirs(nginx_dir, exist_ok=True)
+		log("INFO", f"Writing nginx config to {config_file}")
+		with open(config_file, "w") as f:
+			f.write(nginx_config)
+		log("INFO", f"Successfully wrote nginx config for instance {instance.id}")
+	except IOError as e:
+		log("ERROR", f"Failed to write nginx config to {config_file}: {str(e)}")
+		raise
+	except Exception as e:
+		log("ERROR", f"Unexpected error writing nginx config: {str(e)}")
+		raise
 
 def reload_nginx():
 	nginx_container = utils.docker.docker_client.containers.get("flowcase-nginx")

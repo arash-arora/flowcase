@@ -662,33 +662,6 @@ function FetchAdminGroups(callback)
 	console.log("Retrieving groups...");
 }
 
-function FetchDockerNetworks(callback)
-{
-	var url = "/api/admin/docker/networks";
-	var xhr = new XMLHttpRequest();
-	xhr.open("GET", url, true);
-	xhr.setRequestHeader("Content-Type", "application/json");
-	xhr.onreadystatechange = function () {
-		if (xhr.readyState === 4) {
-			var json = JSON.parse(xhr.responseText);
-			if (json["success"] == true) {
-				callback(json["networks"]);
-			}
-			else
-			{
-				if (json["error"] != null) {
-					console.log("Failed to fetch networks: " + json["error"]);
-				}
-				// Return default network on error
-				callback(['flowcase_default_network']);
-			}
-		}
-	};
-	xhr.send();
-
-	console.log("Retrieving Docker networks...");
-}
-
 function FetchAdminRegistry(callback)
 {
 	var url = "/api/admin/registry";
@@ -1135,13 +1108,6 @@ function ShowEditDroplet(instance_id = null)
 		</div>
 	</div>
 
-	<div class="admin-modal-card" id="admin-droplet-network-section" style="display: none;">
-		<p>Docker Network</p>
-		<select id="admin-edit-droplet-network">
-			<option value="">Loading networks...</option>
-		</select>
-	</div>
-
 	<div id="admin-droplet-edit-container-only">
 		<div class="admin-modal-card">
 			<p>Docker Registry <span class="required">*</span></p>
@@ -1214,23 +1180,6 @@ function ShowEditDroplet(instance_id = null)
 		`;
 		groupsContainer.appendChild(checkbox);
 	});
-
-	// Fetch and populate available Docker networks (only for container type)
-	FetchDockerNetworks(function(networks) {
-		const networkSelect = document.getElementById('admin-edit-droplet-network');
-		networkSelect.innerHTML = '';
-		const currentNetwork = droplet ? droplet.docker_network || 'flowcase_default_network' : 'flowcase_default_network';
-		
-		networks.forEach(net => {
-			const option = document.createElement('option');
-			option.value = net;
-			option.textContent = net;
-			if (net === currentNetwork) {
-				option.selected = true;
-			}
-			networkSelect.appendChild(option);
-		});
-	});
 }
 
 function ChangeDropletType()
@@ -1239,16 +1188,13 @@ function ChangeDropletType()
 
 	var containerOnly = document.getElementById('admin-droplet-edit-container-only');
 	var serverOnly = document.getElementById('admin-droplet-edit-server-only');
-	var networkSection = document.getElementById('admin-droplet-network-section');
 
 	if (type == "container") {
 		containerOnly.style.display = "block";
 		serverOnly.style.display = "none";
-		networkSection.style.display = "block";
 	} else {
 		containerOnly.style.display = "none";
 		serverOnly.style.display = "block";
-		networkSection.style.display = "none";
 	}
 }
 
@@ -1327,8 +1273,7 @@ function SaveDroplet(droplet_id = null)
 		"server_port": document.getElementById('admin-edit-droplet-port').value,
 		"server_username": document.getElementById('admin-edit-droplet-username').value,
 		"server_password": document.getElementById('admin-edit-droplet-password').value,
-		"allowed_groups": Array.from(document.querySelectorAll('.admin-edit-droplet-group-checkbox:checked')).map(cb => cb.value),
-		"docker_network": document.getElementById('admin-edit-droplet-network').value
+		"allowed_groups": Array.from(document.querySelectorAll('.admin-edit-droplet-group-checkbox:checked')).map(cb => cb.value)
 	});
 	xhr.send(data);
 
