@@ -18,6 +18,33 @@ login_manager.login_view = '/'
 
 def create_app(config=None):
 	app = Flask(__name__)
+	# Try to load a local .env file if present (optional - requires python-dotenv)
+	try:
+		from dotenv import load_dotenv
+		# load the nearest .env into environment variables
+		load_dotenv()
+	except Exception:
+		# If python-dotenv is not installed, attempt a minimal .env parser so the
+		# repository's .env file still works when running locally without extra deps.
+		try:
+			_env_path = os.path.join(os.getcwd(), '.env')
+			if os.path.exists(_env_path):
+				with open(_env_path, 'r') as _f:
+					for _line in _f:
+						_line = _line.strip()
+						if not _line or _line.startswith('#'):
+							continue
+						if '=' in _line:
+							_k, _v = _line.split('=', 1)
+							_k = _k.strip()
+							_v = _v.strip().strip('"').strip("'")
+							# Only set env var if not already present
+							if _k and os.environ.get(_k) is None:
+								os.environ[_k] = _v
+		except Exception:
+			# If anything goes wrong, silently continue; env vars can be provided
+			# via actual environment variables in production.
+			pass
 	
 	from config.config import configure_app
 	configure_app(app, config)
