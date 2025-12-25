@@ -12,7 +12,18 @@ def parse_args():
 	return parser.parse_known_args()[0]
 
 def configure_app(app, config=None):
-	app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(os.getcwd(), 'data', 'flowcase.db')
+	# Database config - prefer Postgres
+	pg_user = os.environ.get('POSTGRES_USER')
+	pg_password = os.environ.get('POSTGRES_PASSWORD')
+	pg_host = os.environ.get('POSTGRES_HOST')
+	pg_port = os.environ.get('POSTGRES_PORT', '5432')
+	pg_db = os.environ.get('POSTGRES_DB')
+
+	if all([pg_user, pg_password, pg_host, pg_db]):
+		app.config['SQLALCHEMY_DATABASE_URI'] = f"postgresql://{pg_user}:{pg_password}@{pg_host}:{pg_port}/{pg_db}"
+	else:
+		app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(os.getcwd(), 'data', 'flowcase.db')
+
 	app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 	
 	os.makedirs("data", exist_ok=True)

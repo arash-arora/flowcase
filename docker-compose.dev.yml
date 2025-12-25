@@ -14,10 +14,17 @@ services:
     environment:
       - FLASK_APP=run.py
       - FLASK_DEBUG=1
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_HOST=postgres
     ports:
       - "5000"
     networks:
       - default_network
+    depends_on:
+      postgres:
+        condition: service_healthy
     command: python run.py --debug
 
   nginx:
@@ -30,6 +37,26 @@ services:
       - "80:80"
     depends_on:
       - web
+      - postgres
+    networks:
+      - default_network
+
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-flowcase}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flowcase}
+      POSTGRES_DB: ${POSTGRES_DB:-flowcase}
+    ports:
+      - "5432:5432"
+    volumes:
+      - flowcase-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-flowcase}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - default_network
 
@@ -41,4 +68,6 @@ volumes:
   flowcase-data:
     external: false
   flowcase-nginx-data:
+    external: false
+  flowcase-db-data:
     external: false

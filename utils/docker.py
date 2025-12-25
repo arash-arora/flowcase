@@ -110,7 +110,7 @@ def force_pull_required_images():
 					base_image = image_name
 					tag = "latest"
 				
-				docker_client.images.pull(base_image, tag)
+				docker_client.images.pull(base_image, tag, platform="linux/amd64")
 				log("INFO", f"Successfully pulled required Docker image {image_name} ({description})")
 			except Exception as e:
 				log("ERROR", f"Error pulling required Docker image {image_name} ({description}): {e}")
@@ -173,7 +173,7 @@ def pull_images():
 					base_image = image_name
 					tag = "latest"
 				
-				docker_client.images.pull(base_image, tag)
+				docker_client.images.pull(base_image, tag, platform="linux/amd64")
 				log("INFO", f"Successfully pulled required Docker image {image_name} ({description})")
 			except Exception as e:
 				log("ERROR", f"Error pulling required Docker image {image_name} ({description}): {e}")
@@ -234,7 +234,7 @@ def pull_single_image(registry, image_name):
 			tag = "latest"
 		
 		log("INFO", f"Manually pulling Docker image {full_image}")
-		docker_client.images.pull(repository, tag)
+		docker_client.images.pull(repository, tag, platform="linux/amd64")
 		log("INFO", f"Successfully pulled Docker image {full_image}")
 		return True, f"Successfully pulled {full_image}"
 		
