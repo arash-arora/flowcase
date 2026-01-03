@@ -8,6 +8,7 @@ from __init__ import db, bcrypt, __version__
 from models.user import User, Group
 from models.droplet import Droplet, DropletInstance
 from models.registry import Registry
+from models.network import DockerNetwork
 from models.log import Log
 from utils.permissions import Permissions
 from utils.logger import log
@@ -159,7 +160,8 @@ def api_admin_droplets():
 			"server_port": droplet.server_port,
 			"server_username": droplet.server_username,
 			"server_password": "********************************" if droplet.server_password else None,
-			"allowed_groups": droplet.allowed_groups if droplet.allowed_groups else ""
+			"allowed_groups": droplet.allowed_groups if droplet.allowed_groups else "",
+			"network_id": droplet.network_id
 		})
  
 	return jsonify(response)
@@ -196,12 +198,21 @@ def api_admin_edit_droplet():
  
 	if droplet.droplet_type == "container":
 		droplet.container_docker_registry = request.json.get('container_docker_registry')
+		# Registry is optional
 		if not droplet.container_docker_registry:
-			return jsonify({"success": False, "error": "Docker Registry is required"}), 400
+			droplet.container_docker_registry = None
 
 		droplet.container_docker_image = request.json.get('container_docker_image')
 		if not droplet.container_docker_image:
 			return jsonify({"success": False, "error": "Docker Image is required"}), 400
+	
+		droplet.registry_username = request.json.get('registry_username', None)
+		if droplet.registry_username == "":
+			droplet.registry_username = None
+
+		new_registry_password = request.json.get('registry_password', None)
+		if new_registry_password and new_registry_password != "********************************":
+			droplet.registry_password = new_registry_password
 	
 		# Ensure cores and memory are integers
 		if not request.json.get('container_cores'):
@@ -227,6 +238,10 @@ def api_admin_edit_droplet():
 		droplet.container_persistent_profile_path = request.json.get('container_persistent_profile_path')
 		if not droplet.container_persistent_profile_path:
 			droplet.container_persistent_profile_path = None
+   
+		droplet.network_id = request.json.get('network_id')
+		if not droplet.network_id:
+			droplet.network_id = None
   
 	elif droplet.droplet_type == "vnc" or droplet.droplet_type == "rdp" or droplet.droplet_type == "ssh":
 		droplet.server_ip = request.json.get('server_ip')
@@ -413,10 +428,23 @@ def api_admin_groups():
 	}
  
 	for group in groups:
+		# Find droplets assigned to this group
+		assigned_droplets = []
+		droplets = Droplet.query.all()
+		for droplet in droplets:
+			if droplet.allowed_groups:
+				allowed_ids = [g.strip() for g in droplet.allowed_groups.split(',') if g.strip()]
+				if group.id in allowed_ids:
+					assigned_droplets.append({
+						"id": droplet.id,
+						"display_name": droplet.display_name
+					})
+
 		response["groups"].append({
 			"id": group.id,
 			"display_name": group.display_name,
 			"protected": group.protected,
+			"assigned_droplets": assigned_droplets,
 			"permissions": {
 				"admin_panel": group.perm_admin_panel,
 				"view_instances": group.perm_view_instances,
@@ -500,6 +528,26 @@ def api_admin_edit_group():
  
 	if create_new:
 		db.session.add(group)
+		db.session.flush() # Ensure ID is generated
+
+	assigned_droplet_ids = request.json.get('assigned_droplets')
+	if assigned_droplet_ids is not None:
+		all_droplets = Droplet.query.all()
+		for droplet in all_droplets:
+			current_allowed = []
+			if droplet.allowed_groups:
+				current_allowed = [g.strip() for g in droplet.allowed_groups.split(',') if g.strip()]
+			
+			if droplet.id in assigned_droplet_ids:
+				# Should be assigned
+				if group.id not in current_allowed:
+					current_allowed.append(group.id)
+					droplet.allowed_groups = ','.join(current_allowed)
+			else:
+				# Should NOT be assigned
+				if group.id in current_allowed:
+					current_allowed = [g for g in current_allowed if g != group.id]
+					droplet.allowed_groups = ','.join(current_allowed) if current_allowed else None
  
 	db.session.commit()
  
@@ -670,9 +718,21 @@ def api_admin_pull_image():
 	registry = request.json.get('registry')
 	image = request.json.get('image')
 	
+	droplet = None
+	if droplet_id and droplet_id != "guac":
+		droplet = Droplet.query.filter_by(id=droplet_id).first()
+
+	# Prepare auth config
+	auth_config = None
+	if droplet and droplet.registry_username and droplet.registry_password:
+		auth_config = {
+			'username': droplet.registry_username,
+			'password': droplet.registry_password
+		}
+
 	# Handle auto-download case where registry and image are provided directly
-	if registry and image:
-		success, message = utils.docker.pull_single_image(registry, image)
+	if image:
+		success, message = utils.docker.pull_single_image(registry, image, auth_config=auth_config)
 		if success:
 			return jsonify({
 				"success": True,
@@ -693,9 +753,9 @@ def api_admin_pull_image():
 		from __init__ import __version__
 		registry = "https://index.docker.io/v1/"
 		image_name = f"flowcaseweb/flowcase-guac:{__version__}"
+		# Guac doesn't need auth usually, or it's public
+		auth_config = None 
 	else:
-		# Get droplet info
-		droplet = Droplet.query.filter_by(id=droplet_id).first()
 		if not droplet:
 			return jsonify({"success": False, "error": "Droplet not found"}), 404
 
@@ -706,7 +766,7 @@ def api_admin_pull_image():
 		image_name = droplet.container_docker_image
 
 	# Pull the image
-	success, message = utils.docker.pull_single_image(registry, image_name)
+	success, message = utils.docker.pull_single_image(registry, image_name, auth_config=auth_config)
 	
 	if success:
 		return jsonify({
@@ -778,3 +838,160 @@ def api_admin_image_logs():
 			"success": False,
 			"error": f"Failed to fetch image logs: {str(e)}"
 		}), 500 
+@admin_bp.route('/networks', methods=['GET'])
+@login_required
+def api_admin_networks():
+	"""Get all docker networks"""
+	if not Permissions.check_permission(current_user.id, Permissions.VIEW_DROPLETS): # Or a new permission? Using view_droplets for now
+		return jsonify({"success": False, "error": "Unauthorized"}), 403
+
+	if not utils.docker.is_docker_available():
+		return jsonify({
+			"success": False, 
+			"error": "Docker service is not available"
+		}), 503
+
+	# Get existing DB networks
+	networks = DockerNetwork.query.all()
+	network_list = []
+	
+	for net in networks:
+		network_list.append({
+			"id": net.id,
+			"name": net.name,
+			"subnet": net.subnet,
+			"gateway": net.gateway,
+			"driver": net.driver,
+			"active": True # Assume active if in DB for now, or do a lightweight check? 
+			# Doing a lightweight check might still require fetching all networks from docker.
+			# Let's skip docker check for speed on this frequent endpoint.
+		})
+
+	return jsonify({
+		"success": True,
+		"networks": network_list
+	})
+
+@admin_bp.route('/networks/sync', methods=['POST'])
+@login_required
+def api_admin_networks_sync():
+	"""Sync system docker networks to DB"""
+	if not Permissions.check_permission(current_user.id, Permissions.EDIT_DROPLETS):
+		return jsonify({"success": False, "error": "Unauthorized"}), 403
+
+	if not utils.docker.is_docker_available():
+		return jsonify({
+			"success": False, 
+			"error": "Docker service is not available"
+		}), 503
+
+	# Get real docker networks
+	try:
+		real_networks = {n['name']: n for n in utils.docker.get_networks()}
+		
+		# Get existing DB networks
+		db_networks = {n.name: n for n in DockerNetwork.query.all()}
+		
+		added_count = 0
+		# Sync: Add real networks to DB if missing
+		for net_name, net_data in real_networks.items():
+			if net_name not in db_networks:
+				# Auto-create network in DB
+				new_net = DockerNetwork(
+					name=net_name,
+					driver=net_data['driver'],
+					subnet=net_data['subnet'],
+					gateway=net_data['gateway']
+				)
+				db.session.add(new_net)
+				added_count += 1
+				
+		# Commit any new networks
+		if added_count > 0:
+			db.session.commit()
+			
+		return jsonify({
+			"success": True,
+			"message": f"Synced {added_count} new networks",
+			"added_count": added_count
+		})
+	except Exception as e:
+		log("ERROR", f"Failed to sync networks: {e}")
+		db.session.rollback()
+		return jsonify({"success": False, "error": str(e)}), 500
+
+@admin_bp.route('/network', methods=['POST'])
+@login_required
+def api_admin_edit_network():
+	"""Create or edit a docker network"""
+	if not Permissions.check_permission(current_user.id, Permissions.EDIT_DROPLETS):
+		return jsonify({"success": False, "error": "Unauthorized"}), 403
+
+	if not utils.docker.is_docker_available():
+		return jsonify({
+			"success": False, 
+			"error": "Docker service is not available"
+		}), 503
+
+	network_id = request.json.get('id')
+	name = request.json.get('name')
+	subnet = request.json.get('subnet')
+	gateway = request.json.get('gateway')
+	driver = request.json.get('driver', 'bridge')
+	
+	if not name:
+		return jsonify({"success": False, "error": "Network name is required"}), 400
+
+	network = None
+	if network_id:
+		network = DockerNetwork.query.filter_by(id=network_id).first()
+	
+	if not network:
+		# Check if name exists
+		if DockerNetwork.query.filter_by(name=name).first():
+			return jsonify({"success": False, "error": "Network with this name already exists"}), 400
+		network = DockerNetwork()
+		db.session.add(network)
+	
+	network.name = name
+	network.subnet = subnet
+	network.gateway = gateway
+	network.driver = driver
+	
+	db.session.commit()
+	
+	# Now actually create it in Docker
+	# First check if it exists
+	real_networks = {n['name']: n for n in utils.docker.get_networks()}
+	if name not in real_networks:
+		success, msg = utils.docker.create_network(name, driver, subnet, gateway)
+		if not success:
+			return jsonify({"success": False, "error": f"Failed to create docker network: {msg}"}), 500
+	
+	return jsonify({"success": True, "id": network.id})
+
+@admin_bp.route('/network', methods=['DELETE'])
+@login_required
+def api_admin_delete_network():
+	"""Delete a docker network"""
+	if not Permissions.check_permission(current_user.id, Permissions.EDIT_DROPLETS):
+		return jsonify({"success": False, "error": "Unauthorized"}), 403
+
+	network_id = request.json.get('id')
+	network = DockerNetwork.query.filter_by(id=network_id).first()
+	
+	if not network:
+		return jsonify({"success": False, "error": "Network not found"}), 404
+
+	# Check if any droplet uses this network
+	if Droplet.query.filter_by(network_id=network.id).first():
+		return jsonify({"success": False, "error": "Cannot delete network: It is being used by one or more droplets"}), 400
+
+	# Delete from Docker
+	utils.docker.delete_network(network.name)
+	
+	# Delete from DB
+	db.session.delete(network)
+	db.session.commit()
+	
+	return jsonify({"success": True})

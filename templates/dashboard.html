@@ -106,6 +106,9 @@
                     <a href="#" class="admin-modal-sidebar-button" onclick="AdminChangeTab('images', this)">
                         <i class="fas fa-download"></i>Images
                     </a>
+                    <a href="#" class="admin-modal-sidebar-button" onclick="AdminChangeTab('networks', this)">
+                        <i class="fas fa-network-wired"></i>Networks
+                    </a>
                     {% endif %}
                     {% if current_user.has_permission("perm_view_registry") %}
                     <a href="#" class="admin-modal-sidebar-button" onclick="AdminChangeTab('registry', this)">

@@ -3,6 +3,7 @@ import re
 import time
 import base64
 import json
+import traceback
 from typing import Tuple
 import docker
 from Crypto.Cipher import AES
@@ -114,250 +115,290 @@ def get_instances():
 @droplet_bp.route('/api/instance/request', methods=['POST'])
 @login_required
 def request_new_instance():
-	from utils.permissions import Permissions
-	droplet_id = request.json.get('droplet_id')
-	droplet = Droplet.query.filter_by(id=droplet_id).first()
-	if not droplet:
-		return jsonify({"success": False, "error": "Droplet not found"}), 404
+	try:
+		from utils.permissions import Permissions
+		droplet_id = request.json.get('droplet_id')
+		droplet = Droplet.query.filter_by(id=droplet_id).first()
+		if not droplet:
+			return jsonify({"success": False, "error": "Droplet not found"}), 404
 
-	# Check if user has access to this droplet based on group membership
-	if not Permissions.user_in_groups(current_user.id, droplet.allowed_groups):
-		return jsonify({"success": False, "error": "You do not have access to this droplet"}), 403
+		# Check if user has access to this droplet based on group membership
+		if not Permissions.user_in_groups(current_user.id, droplet.allowed_groups):
+			return jsonify({"success": False, "error": "You do not have access to this droplet"}), 403
 
-	# Check if droplet is a guacamole droplet
-	isGuacDroplet: bool = False
-	if droplet.droplet_type in ["vnc", "rdp", "ssh"]:
-		isGuacDroplet = True
+		# Check if droplet is a guacamole droplet
+		isGuacDroplet: bool = False
+		# Handle potential None for droplet_type if data integrity is bad, though model enforces nullable=False
+		if droplet.droplet_type in ["vnc", "rdp", "ssh"]:
+			isGuacDroplet = True
 
-	# Check if system has enough resources to request this droplet, guacamole droplets do not have resource checks
-	if not isGuacDroplet:
-		success, error = check_resources(droplet)
-		if not success:
-			return jsonify({"success": False, "error": error}), 400
- 
-	# Check if docker client is available
-	if not utils.docker.docker_client:
-		log("ERROR", "Docker client not available")
-		return jsonify({"success": False, "error": "Docker service is not available"}), 500
-
-	# Check if docker image is downloaded
-	images = utils.docker.docker_client.images.list()
-	image_name = droplet.container_docker_image
-	if droplet.container_docker_registry and "docker.io" not in droplet.container_docker_registry:
-		image_name = droplet.container_docker_registry + "/" + image_name
-
-	image_exists = False
-	for image in images:
-		if isGuacDroplet and f"flowcaseweb/flowcase-guac:{__version__}" in image.tags:
-			image_exists = True
-			break
-
-		if image_name in image.tags:
-			image_exists = True
-			break
-		
-	if not image_exists:
-		log("WARNING", f"Docker image {droplet.container_docker_image} not found. Please wait a few minutes and try again.")
-		return jsonify({"success": False, "error": "Docker image not found. Image might still be downloading."}), 400
-	
-		"""
-		try:
-			# Use the existing pull_single_image function with timeout
-			def pull_with_timeout():
-				return utils.docker.pull_single_image(
-					droplet.container_docker_registry, 
-					droplet.container_docker_image
-				)
-			
-			success, message = timeout_wrapper(pull_with_timeout, timeout_seconds=300)
-			
+		# Check if system has enough resources to request this droplet, guacamole droplets do not have resource checks
+		if not isGuacDroplet:
+			success, error = check_resources(droplet)
 			if not success:
-				if "timed out" in message:
-					return jsonify({"success": False, "error": "Image download timed out. Please try again or download manually from the admin panel."}), 408
-				else:
-					log("ERROR", f"Failed to pull Docker image {image_name}: {message}")
-					return jsonify({"success": False, "error": f"Failed to download Docker image. Error: {message}"}), 400
-			
-			log("INFO", f"Successfully pulled Docker image {image_name}")
+				return jsonify({"success": False, "error": error}), 400
+
+		# Check if docker client is available
+		if not utils.docker.docker_client:
+			log("ERROR", "Docker client not available")
+			return jsonify({"success": False, "error": "Docker service is not available"}), 500
+
+		# Check if docker image is downloaded
+		try:
+			images = utils.docker.docker_client.images.list()
 		except Exception as e:
-			log("ERROR", f"Failed to pull Docker image {image_name}: {str(e)}")
-			return jsonify({"success": False, "error": f"Failed to download Docker image. Error: {str(e)}"}), 400
-		"""
+			log("ERROR", f"Failed to list docker images: {str(e)}")
+			return jsonify({"success": False, "error": f"Failed to communicate with Docker: {str(e)}"}), 500
 
-	# Create a new instance
-	instance = DropletInstance(droplet_id=droplet_id, user_id=current_user.id)
-	db.session.add(instance)
-	db.session.commit()
- 
-	# Create a docker container
-	log("INFO", f"Creating new instance for user {current_user.username} with droplet {droplet.display_name}")
- 
-	name = f"flowcase_generated_{instance.id}"
- 
-	request_resolution = request.json.get('resolution')
-	if len(request_resolution) < 10 and re.match(r"[0-9]+x[0-9]+", request_resolution):
-		resolution = request_resolution
-	else:
-		resolution = "1280x720"
-  
-	# Persistent Profile
-	mount = None
-	if droplet.container_persistent_profile_path and droplet.container_persistent_profile_path != "" and not isGuacDroplet:
+		image_name = droplet.container_docker_image
+		if droplet.container_docker_registry and "docker.io" not in droplet.container_docker_registry:
+			image_name = droplet.container_docker_registry + "/" + image_name
+
+		image_exists = False
+		for image in images:
+			if isGuacDroplet and f"flowcaseweb/flowcase-guac:{__version__}" in image.tags:
+				image_exists = True
+				break
+
+			if image.tags and image_name in image.tags:
+				image_exists = True
+				break
+			
+		if not image_exists:
+			log("WARNING", f"Docker image {droplet.container_docker_image} not found. Please wait a few minutes and try again.")
+			return jsonify({"success": False, "error": "Docker image not found. Image might still be downloading."}), 400
 		
-		profilePath = droplet.container_persistent_profile_path
-  
-		# Replace variables
-		profilePath = profilePath.replace("{user_id}", str(current_user.id))
-		profilePath = profilePath.replace("{username}", current_user.username)
-		profilePath = profilePath.replace("{droplet_id}", str(droplet_id))
-  
-		# Ensure path ends with /
-		if profilePath[-1] != "/":
-			profilePath += "/"
-
-		mount = docker.types.Mount(target="/home/flowcase-user", source=profilePath, type="bind", consistency="[r]private")
-  
-		# Hack: the first time the mount is created, the container will crash, so we start the container twice
-		# this should be fixed in the core droplets
-		if not os.path.exists(profilePath + ".bashrc"):
+			"""
 			try:
+				# Use the existing pull_single_image function with timeout
+				def pull_with_timeout():
+					return utils.docker.pull_single_image(
+						droplet.container_docker_registry, 
+						droplet.container_docker_image
+					)
+				
+				success, message = timeout_wrapper(pull_with_timeout, timeout_seconds=300)
+				
+				if not success:
+					if "timed out" in message:
+						return jsonify({"success": False, "error": "Image download timed out. Please try again or download manually from the admin panel."}), 408
+					else:
+						log("ERROR", f"Failed to pull Docker image {image_name}: {message}")
+						return jsonify({"success": False, "error": f"Failed to download Docker image. Error: {message}"}), 400
+				
+				log("INFO", f"Successfully pulled Docker image {image_name}")
+			except Exception as e:
+				log("ERROR", f"Failed to pull Docker image {image_name}: {str(e)}")
+				return jsonify({"success": False, "error": f"Failed to download Docker image. Error: {str(e)}"}), 400
+			"""
+
+		# Create a new instance
+		instance = DropletInstance(droplet_id=droplet_id, user_id=current_user.id)
+		db.session.add(instance)
+		db.session.commit()
+	
+		# Create a docker container
+		log("INFO", f"Creating new instance for user {current_user.username} with droplet {droplet.display_name}")
+	
+		name = f"flowcase_generated_{instance.id}"
+	
+		request_resolution = request.json.get('resolution')
+		if request_resolution and len(request_resolution) < 10 and re.match(r"[0-9]+x[0-9]+", request_resolution):
+			resolution = request_resolution
+		else:
+			resolution = "1280x720"
+	
+		# Persistent Profile
+		mount = None
+		if droplet.container_persistent_profile_path and droplet.container_persistent_profile_path != "" and not isGuacDroplet:
+			
+			profilePath = droplet.container_persistent_profile_path
+	
+			# Replace variables
+			profilePath = profilePath.replace("{user_id}", str(current_user.id))
+			profilePath = profilePath.replace("{username}", current_user.username)
+			profilePath = profilePath.replace("{droplet_id}", str(droplet_id))
+	
+			# Ensure path ends with /
+			if profilePath[-1] != "/":
+				profilePath += "/"
+
+			mount = docker.types.Mount(target="/home/flowcase-user", source=profilePath, type="bind", consistency="[r]private")
+	
+			# Hack: the first time the mount is created, the container will crash, so we start the container twice
+			# this should be fixed in the core droplets
+			if not os.path.exists(profilePath + ".bashrc"):
+				try:
+					container = utils.docker.docker_client.containers.run(
+						image=image_name,
+						detach=True,
+						mem_limit="512000000",
+						cpu_shares=int(droplet.container_cores * 1024),
+						mounts=[mount],
+					)
+					time.sleep(1)
+					container.stop()
+					container.remove(force=True)
+				except Exception as e:
+					log("ERROR", f"Error creating profile directory structure: {str(e)}")
+					db.session.delete(instance)
+					db.session.commit()
+					return jsonify({"success": False, "error": "Failed to setup persistent profile"}), 500
+		
+		# Create the container
+		try:
+			network_name = "flowcase_default_network"
+			if droplet.network_id:
+				from models.network import DockerNetwork
+				network = DockerNetwork.query.filter_by(id=droplet.network_id).first()
+				if network:
+					network_name = network.name
+
+			if not isGuacDroplet:
 				container = utils.docker.docker_client.containers.run(
 					image=image_name,
+					name=name,
+					environment={"DISPLAY": ":1", "VNC_PW": current_user.auth_token, "VNC_RESOLUTION": resolution},
 					detach=True,
-					mem_limit="512000000",
+					network=network_name,
+					mem_limit=f"{droplet.container_memory}000000",
 					cpu_shares=int(droplet.container_cores * 1024),
-					mounts=[mount],
+					mounts=[mount] if mount else None,
 				)
-				time.sleep(1)
-				container.stop()
-				container.remove(force=True)
-			except Exception as e:
-				log("ERROR", f"Error creating profile directory structure: {str(e)}")
-				db.session.delete(instance)
-				db.session.commit()
-				return jsonify({"success": False, "error": "Failed to setup persistent profile"}), 500
-	
-	# Create the container
-	try:
-		if not isGuacDroplet:
-			container = utils.docker.docker_client.containers.run(
-				image=image_name,
-				name=name,
-				environment={"DISPLAY": ":1", "VNC_PW": current_user.auth_token, "VNC_RESOLUTION": resolution},
-				detach=True,
-				network="flowcase_default_network",
-				mem_limit=f"{droplet.container_memory}000000",
-				cpu_shares=int(droplet.container_cores * 1024),
-				mounts=[mount] if mount else None,
-			)
-		else: # Guacamole droplet
-			container = utils.docker.docker_client.containers.run(
-				image=f"flowcaseweb/flowcase-guac:{__version__}",
-				name=name,
-				environment={"GUAC_KEY": current_user.auth_token[:32]},
-				detach=True,
-				network="flowcase_default_network",
-			)
- 
-		log("INFO", f"Instance created for user {current_user.username} with droplet {droplet.display_name}")
- 
-		# Wait for container to start and verify it's running with timeout
-		max_wait_time = 30  # Maximum wait time in seconds
-		check_interval = 1  # Check every 1 second
-		waited_time = 0
-		
-		while waited_time < max_wait_time:
-			time.sleep(check_interval)
-			waited_time += check_interval
-			
-			try:
-				container.reload()
-				if container.status == 'running':
-					log("INFO", f"Container {name} is running after {waited_time} seconds")
-					break
-				elif container.status in ['exited', 'dead']:
-					log("ERROR", f"Container {name} failed to start, status: {container.status}")
-					# Get container logs for debugging
+				
+				# If we are using a custom network, we MUST also connect to the default network
+				# so that the Nginx proxy (which is on the default network) can reach this container.
+				if network_name != "flowcase_default_network":
 					try:
-						logs = container.logs().decode('utf-8')[-1000:]  # Last 1000 chars
-						log("ERROR", f"Container logs: {logs}")
-					except:
-						pass
+						default_net = utils.docker.docker_client.networks.list(names=["flowcase_default_network"])
+						if default_net:
+							default_net[0].connect(container)
+							log("INFO", f"Connected {name} to flowcase_default_network for Nginx access")
+						else:
+							log("WARNING", "flowcase_default_network not found! Nginx might not reach container.")
+					except Exception as e:
+						log("ERROR", f"Failed to connect {name} to flowcase_default_network: {e}")
+			else: # Guacamole droplet
+				container = utils.docker.docker_client.containers.run(
+					image=f"flowcaseweb/flowcase-guac:{__version__}",
+					name=name,
+					environment={"GUAC_KEY": current_user.auth_token[:32]},
+					detach=True,
+					network="flowcase_default_network",
+				)
+	
+			log("INFO", f"Instance created for user {current_user.username} with droplet {droplet.display_name}")
+	
+			# Wait for container to start and verify it's running with timeout
+			max_wait_time = 30  # Maximum wait time in seconds
+			check_interval = 1  # Check every 1 second
+			waited_time = 0
+			
+			while waited_time < max_wait_time:
+				time.sleep(check_interval)
+				waited_time += check_interval
+				
+				try:
+					container.reload()
+					if container.status == 'running':
+						log("INFO", f"Container {name} is running after {waited_time} seconds")
+						break
+					elif container.status in ['exited', 'dead']:
+						log("ERROR", f"Container {name} failed to start, status: {container.status}")
+						# Get container logs for debugging
+						try:
+							logs = container.logs().decode('utf-8')[-1000:]  # Last 1000 chars
+							log("ERROR", f"Container logs: {logs}")
+						except:
+							pass
+						container.remove(force=True)
+						db.session.delete(instance)
+						db.session.commit()
+						return jsonify({"success": False, "error": f"Container failed to start (status: {container.status})"}), 500
+				except Exception as e:
+					log("ERROR", f"Error checking container status: {str(e)}")
 					container.remove(force=True)
 					db.session.delete(instance)
 					db.session.commit()
-					return jsonify({"success": False, "error": f"Container failed to start (status: {container.status})"}), 500
-			except Exception as e:
-				log("ERROR", f"Error checking container status: {str(e)}")
+					return jsonify({"success": False, "error": "Failed to verify container status"}), 500
+			
+			# Final check if we timed out
+			if waited_time >= max_wait_time:
+				log("ERROR", f"Container {name} startup timed out after {max_wait_time} seconds")
+				try:
+					logs = container.logs().decode('utf-8')[-1000:]  # Last 1000 chars
+					log("ERROR", f"Container logs: {logs}")
+				except:
+					pass
 				container.remove(force=True)
 				db.session.delete(instance)
 				db.session.commit()
-				return jsonify({"success": False, "error": "Failed to verify container status"}), 500
-		
-		# Final check if we timed out
-		if waited_time >= max_wait_time:
-			log("ERROR", f"Container {name} startup timed out after {max_wait_time} seconds")
+				return jsonify({"success": False, "error": "Container startup timed out"}), 500
+	
+			# Create nginx config - get fresh container info
 			try:
-				logs = container.logs().decode('utf-8')[-1000:]  # Last 1000 chars
-				log("ERROR", f"Container logs: {logs}")
+				container = utils.docker.docker_client.containers.get(f"flowcase_generated_{instance.id}")
+				networks = container.attrs['NetworkSettings']['Networks']
+				
+				# Get IP from flowcase_default_network
+				ip = None
+				# Get IP from network
+				ip = None
+				if 'flowcase_default_network' in networks:
+					ip = networks['flowcase_default_network'].get('IPAddress')
+				elif network_name in networks:
+					ip = networks[network_name].get('IPAddress')
+				
+				# Fallback to the first network found if specific ones aren't there (shouldn't happen)
+				if not ip and networks:
+					first_net = list(networks.values())[0]
+					ip = first_net.get('IPAddress')
+				
+				if not ip:
+					log("ERROR", f"Could not find IP address for container {name} on flowcase_default_network")
+					container.remove(force=True)
+					db.session.delete(instance)
+					db.session.commit()
+					return jsonify({"success": False, "error": "Could not determine container IP address"}), 500
+					
+			except Exception as e:
+				log("ERROR", f"Error getting container network info: {str(e)}")
+				container.remove(force=True)
+				db.session.delete(instance)
+				db.session.commit()
+				return jsonify({"success": False, "error": "Failed to get container network information"}), 500
+	
+			# Generate nginx configuration
+			nginx_config = generate_nginx_config(instance, droplet, ip, current_user)
+	
+			try:
+				write_nginx_config(instance, nginx_config)
+			except Exception as e:
+				log("ERROR", f"Error writing nginx config: {str(e)}")
+				container.remove(force=True)
+				db.session.delete(instance)
+				db.session.commit()
+				return jsonify({"success": False, "error": "Failed to write nginx configuration"}), 500
+			
+			reload_nginx()
+	
+		except Exception as e:
+			log("ERROR", f"Error creating container for user {current_user.username}: {str(e)}")
+			# Cleanup on failure
+			try:
+				if 'container' in locals():
+					container.remove(force=True)
 			except:
 				pass
-			container.remove(force=True)
 			db.session.delete(instance)
 			db.session.commit()
-			return jsonify({"success": False, "error": "Container startup timed out"}), 500
- 
-		# Create nginx config - get fresh container info
-		try:
-			container = utils.docker.docker_client.containers.get(f"flowcase_generated_{instance.id}")
-			networks = container.attrs['NetworkSettings']['Networks']
-			
-			# Get IP from flowcase_default_network
-			ip = None
-			if 'flowcase_default_network' in networks:
-				ip = networks['flowcase_default_network'].get('IPAddress')
-			
-			if not ip:
-				log("ERROR", f"Could not find IP address for container {name} on flowcase_default_network")
-				container.remove(force=True)
-				db.session.delete(instance)
-				db.session.commit()
-				return jsonify({"success": False, "error": "Could not determine container IP address"}), 500
-				
-		except Exception as e:
-			log("ERROR", f"Error getting container network info: {str(e)}")
-			container.remove(force=True)
-			db.session.delete(instance)
-			db.session.commit()
-			return jsonify({"success": False, "error": "Failed to get container network information"}), 500
-
-		# Generate nginx configuration
-		nginx_config = generate_nginx_config(instance, droplet, ip, current_user)
- 
-		try:
-			write_nginx_config(instance, nginx_config)
-		except Exception as e:
-			log("ERROR", f"Error writing nginx config: {str(e)}")
-			container.remove(force=True)
-			db.session.delete(instance)
-			db.session.commit()
-			return jsonify({"success": False, "error": "Failed to write nginx configuration"}), 500
-		
-		reload_nginx()
- 
+			return jsonify({"success": False, "error": f"Failed to create container: {str(e)}"}), 500
+	
+		return jsonify({"success": True, "instance_id": instance.id})
 	except Exception as e:
-		log("ERROR", f"Error creating container for user {current_user.username}: {str(e)}")
-		# Cleanup on failure
-		try:
-			if 'container' in locals():
-				container.remove(force=True)
-		except:
-			pass
-		db.session.delete(instance)
-		db.session.commit()
-		return jsonify({"success": False, "error": f"Failed to create container: {str(e)}"}), 500
-
-	return jsonify({"success": True, "instance_id": instance.id})
+		log("ERROR", f"Unhandled exception in request_new_instance: {str(e)}")
+		log("ERROR", traceback.format_exc())
+		return jsonify({"success": False, "error": str(e), "traceback": traceback.format_exc()}), 500
 
 def check_resources(droplet: Droplet) -> Tuple[bool, str]:
 	instances = DropletInstance.query.all()

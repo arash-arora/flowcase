@@ -1,5 +1,6 @@
 import random
 import string
+import time
 from flask import Blueprint, request, redirect, url_for, render_template, make_response, session, current_app
 import requests
 from flask_login import login_user, logout_user, login_required, current_user
@@ -11,7 +12,7 @@ auth_bp = Blueprint('auth', __name__)
 
 @login_manager.user_loader
 def load_user(user_id):
-	return User.query.get(user_id)
+	return db.session.get(User, user_id)
 
 @auth_bp.route('/')
 def index():
@@ -193,6 +194,11 @@ def logout():
 	response.set_cookie('token', '', expires=0)
 	return response
 
+# Simple in-memory cache for auth tokens to reduce DB load
+# Key: (userid, token), Value: timestamp
+_auth_cache = {}
+_AUTH_CACHE_TTL = 300  # 5 minutes
+
 @auth_bp.route('/droplet_connect', methods=['GET'])
 def droplet_connect():
 	userid = request.cookies.get("userid")
@@ -201,12 +207,24 @@ def droplet_connect():
 	if not userid or not token:
 		return make_response("", 401)
 
+	# Check cache
+	now = time.time()
+	cache_key = (userid, token)
+	if cache_key in _auth_cache:
+		if now - _auth_cache[cache_key] < _AUTH_CACHE_TTL:
+			return make_response("", 200)
+		else:
+			del _auth_cache[cache_key]
+
 	user = User.query.filter_by(id=userid).first()
 	if not user:
 		return make_response("", 401)
 
 	if user.auth_token != token:
 		return make_response("", 401)
+	
+	# Update cache
+	_auth_cache[cache_key] = now
 	
 	return make_response("", 200)
 

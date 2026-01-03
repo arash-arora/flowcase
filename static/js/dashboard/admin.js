@@ -1,6 +1,7 @@
 var admin_droplets = [];
 var admin_users = [];
 var admin_groups = [];
+var admin_networks = [];
 
 window.addEventListener('load', () => {
 	AdminChangeTab('system', document.querySelector('.admin-modal-sidebar-button'));
@@ -140,33 +141,35 @@ function AdminChangeTab(tab, element = null)
 			header.innerText = "Droplets";
 			subtext.innerText = "View and manage droplets.";
 
-			// Fetch groups first so they're available when showing edit droplet form
+			// Fetch groups and networks first so they're available when showing edit droplet form
 			FetchAdminGroups(function(groupsJson) {
-				FetchAdminDroplets(function(json) {
-					content.innerHTML = `
-						${userInfo.permissions.perm_edit_droplets ? `
-							<button class="button-1-full" onclick="ShowEditDroplet()">Create Droplet</button>
-							<hr>
-						` : ''}
-
-					<table class="admin-modal-table">
-						<tr>
-							<th>Name</th>
-							<th>Image / IP</th>
-							${userInfo.permissions.perm_edit_droplets ? `<th>Actions</th>` : ''}
-						</tr>
-						${json["droplets"].map(droplet => `
+				FetchAdminNetworks(function(networksJson) {
+					FetchAdminDroplets(function(json) {
+						content.innerHTML = `
+							${userInfo.permissions.perm_edit_droplets ? `
+								<button class="button-1-full" onclick="ShowEditDroplet()">Create Droplet</button>
+								<hr>
+							` : ''}
+	
+						<table class="admin-modal-table">
 							<tr>
-								<td><div><img src="${droplet.image_path ? droplet.image_path : '/static/img/droplet_default.jpg'}"><p>${droplet.display_name}</p></div></td>
-								<td>${droplet.droplet_type == "container" ? droplet.container_docker_image : droplet.server_ip}</td>
-								${userInfo.permissions.perm_edit_droplets ? `<td class="admin-modal-table-actions">
-									<i class="fas fa-edit" onclick="ShowEditDroplet('${droplet.id}')"></i>
-									<i class="fas fa-trash" onclick="AdminDeleteDroplet('${droplet.id}')"></i>
-								</td>` : ''}
+								<th>Name</th>
+								<th>Image / IP</th>
+								${userInfo.permissions.perm_edit_droplets ? `<th>Actions</th>` : ''}
 							</tr>
-						`).join('')}
-					</table>
-					`;
+							${json["droplets"].map(droplet => `
+								<tr>
+									<td><div><img src="${droplet.image_path ? droplet.image_path : '/static/img/droplet_default.jpg'}"><p>${droplet.display_name}</p></div></td>
+									<td>${droplet.droplet_type == "container" ? droplet.container_docker_image : droplet.server_ip}</td>
+									${userInfo.permissions.perm_edit_droplets ? `<td class="admin-modal-table-actions">
+										<i class="fas fa-edit" onclick="ShowEditDroplet('${droplet.id}')"></i>
+										<i class="fas fa-trash" onclick="AdminDeleteDroplet('${droplet.id}')"></i>
+									</td>` : ''}
+								</tr>
+							`).join('')}
+						</table>
+						`;
+					});
 				});
 			});
 			break;
@@ -434,6 +437,56 @@ function AdminChangeTab(tab, element = null)
 			`;
 			
 			FetchImageStatus();
+			break;
+		case 'networks':
+			header.innerText = "Docker Networks";
+			subtext.innerText = "Manage Docker networks for your droplets.";
+			
+			// Trigger sync first, then fetch
+			SyncAdminNetworks(function() {
+				FetchAdminNetworks(function(json) {
+					content.innerHTML = `
+						${userInfo.permissions.perm_edit_droplets ? `
+							<div class="admin-registry-add">
+							<input type="text" placeholder="Network Name" id="admin-network-name">
+							<input type="text" placeholder="Subnet (e.g. 172.25.0.0/16)" id="admin-network-subnet">
+							<input type="text" placeholder="Gateway (Optional)" id="admin-network-gateway">
+							<div>
+							<select id="admin-network-driver" style="margin-bottom: 0px;">
+								<option value="bridge">Bridge</option>
+								<option value="macvlan">Macvlan</option>
+							</select>
+							</div>
+							<button class="button-1-full" onclick="AdminAddNetwork()">Create Network</button>
+						</div>
+						<hr>
+					` : ''}
+
+					<table class="admin-modal-table">
+						<tr>
+							<th>Name</th>
+							<th>Driver</th>
+							<th>Subnet</th>
+							<th>Gateway</th>
+							<th>Status</th>
+							${userInfo.permissions.perm_edit_droplets ? `<th>Actions</th>` : ''}
+						</tr>
+						${json["networks"].map(network => `
+							<tr>
+								<td>${network.name}</td>
+								<td>${network.driver}</td>
+								<td>${network.subnet ? network.subnet : (network.real_subnet ? network.real_subnet + " (Auto)" : "-")}</td>
+								<td>${network.gateway ? network.gateway : "-"}</td>
+								<td>${network.active ? '<span style="color: #28a745;">Active</span>' : '<span style="color: #dc3545;">Inactive</span>'}</td>
+								${userInfo.permissions.perm_edit_droplets ? `<td class="admin-modal-table-actions">
+									<i class="fas fa-trash" onclick="AdminDeleteNetwork('${network.id}')"></i>
+								</td>` : ''}
+							</tr>
+						`).join('')}
+					</table>
+				`;
+			});
+		});
 			break;
 	}
 }
@@ -1110,13 +1163,23 @@ function ShowEditDroplet(instance_id = null)
 
 	<div id="admin-droplet-edit-container-only">
 		<div class="admin-modal-card">
-			<p>Docker Registry <span class="required">*</span></p>
+			<p>Docker Registry</p>
 			<input type="text" id="admin-edit-droplet-docker-registry" value="${ droplet != null ? droplet.container_docker_registry ? droplet.container_docker_registry : "" : "" }">
 		</div>
 
 		<div class="admin-modal-card">
 			<p>Docker Image <span class="required">*</span></p>
 			<input type="text" id="admin-edit-droplet-docker-image" value="${ droplet != null ? droplet.container_docker_image ? droplet.container_docker_image : "" : "" }">
+		</div>
+
+		<div class="admin-modal-card">
+			<p>Registry Username</p>
+			<input type="text" id="admin-edit-droplet-registry-username" value="${ droplet != null ? droplet.registry_username ? droplet.registry_username : "" : "" }">
+		</div>
+
+		<div class="admin-modal-card">
+			<p>Registry Password</p>
+			<input type="password" id="admin-edit-droplet-registry-password" value="${ droplet != null ? droplet.registry_password ? droplet.registry_password : "" : "" }">
 		</div>
 
 		<div class="admin-modal-card">
@@ -1129,9 +1192,18 @@ function ShowEditDroplet(instance_id = null)
 			<input type="number" id="admin-edit-droplet-memory" value="${ droplet != null ? droplet.container_memory : "" }">
 		</div>
 
-		<div class="admin-modal-card">
 			<p>Persistant Profile Path</p>
 			<input type="text" id="admin-edit-droplet-persistent-profile" value="${ droplet != null ? droplet.container_persistent_profile_path ? droplet.container_persistent_profile_path : "" : "" }">
+		</div>
+
+		<div class="admin-modal-card">
+			<p>Network</p>
+			<select id="admin-edit-droplet-network">
+				<option value="">Default (flowcase_default_network)</option>
+				${admin_networks.map(network => `
+					<option value="${network.id}" ${droplet != null && droplet.network_id == network.id ? "selected" : ""}>${network.name} (${network.subnet ? network.subnet : "Auto"})</option>
+				`).join('')}
+			</select>
 		</div>
 	</div>
 
@@ -1215,7 +1287,7 @@ function SaveDroplet(droplet_id = null)
 				var dockerRegistry = document.getElementById('admin-edit-droplet-docker-registry').value;
 				
 				
-				if (dockerImage && dockerRegistry) {					
+				if (dockerImage) {					
 					// Attempt to pull the image
 					var pullUrl = "/api/admin/images/pull";
 					var pullXhr = new XMLHttpRequest();
@@ -1266,6 +1338,8 @@ function SaveDroplet(droplet_id = null)
 		"droplet_type": document.getElementById('admin-edit-droplet-type').value,
 		"container_docker_registry": document.getElementById('admin-edit-droplet-docker-registry').value,
 		"container_docker_image": document.getElementById('admin-edit-droplet-docker-image').value,
+		"registry_username": document.getElementById('admin-edit-droplet-registry-username').value,
+		"registry_password": document.getElementById('admin-edit-droplet-registry-password').value,
 		"container_cores": document.getElementById('admin-edit-droplet-cores').value,
 		"container_memory": document.getElementById('admin-edit-droplet-memory').value,
 		"container_persistent_profile_path": document.getElementById('admin-edit-droplet-persistent-profile').value,
@@ -1273,7 +1347,8 @@ function SaveDroplet(droplet_id = null)
 		"server_port": document.getElementById('admin-edit-droplet-port').value,
 		"server_username": document.getElementById('admin-edit-droplet-username').value,
 		"server_password": document.getElementById('admin-edit-droplet-password').value,
-		"allowed_groups": Array.from(document.querySelectorAll('.admin-edit-droplet-group-checkbox:checked')).map(cb => cb.value)
+		"allowed_groups": Array.from(document.querySelectorAll('.admin-edit-droplet-group-checkbox:checked')).map(cb => cb.value),
+		"network_id": document.getElementById('admin-edit-droplet-network') ? document.getElementById('admin-edit-droplet-network').value : null
 	});
 	xhr.send(data);
 
@@ -1392,6 +1467,131 @@ function FetchImageStatus()
 	xhr.send();
 	
 	console.log("Fetching image status...");
+}
+
+function FetchAdminNetworks(callback)
+{
+	var url = "/api/admin/networks";
+	var xhr = new XMLHttpRequest();
+	xhr.open("GET", url, true);
+	xhr.setRequestHeader("Content-Type", "application/json");
+	xhr.onreadystatechange = function () {
+		if (xhr.readyState === 4) {
+			var json = JSON.parse(xhr.responseText);
+			if (json["success"] == true) {
+				admin_networks = json["networks"];
+				callback(json);
+			}
+			else
+			{
+				if (json["error"] != null) {
+					CreateNotification(json["error"], "error");
+				}
+				else {
+					CreateNotification("An error occurred while retrieving networks. Please try again later.", "error");
+				}
+			}
+		}
+	};
+	xhr.send();
+	
+	console.log("Retrieving networks...");
+}
+
+function AdminAddNetwork()
+{
+	var url = "/api/admin/network";
+	var xhr = new XMLHttpRequest();
+	xhr.open("POST", url, true);
+	xhr.setRequestHeader("Content-Type", "application/json");
+	xhr.onreadystatechange = function () {
+		if (xhr.readyState === 4) {
+			var json = JSON.parse(xhr.responseText);
+			if (json["success"] == true) {
+				CreateNotification("Network created successfully.", "success");
+				//Update networks
+				FetchAdminNetworks(function(json) {
+					AdminChangeTab('networks');
+				});
+			}
+			else
+			{
+				if (json["error"] != null) {
+					CreateNotification(json["error"], "error");
+				}
+				else {
+					CreateNotification("An error occurred while creating the network. Please try again later.", "error");
+				}
+			}
+		}
+	};
+	
+	var data = JSON.stringify({
+		"name": document.getElementById('admin-network-name').value,
+		"subnet": document.getElementById('admin-network-subnet').value,
+		"gateway": document.getElementById('admin-network-gateway').value,
+		"driver": document.getElementById('admin-network-driver').value
+	});
+	xhr.send(data);
+
+	console.log("Adding network...");
+}
+
+function AdminDeleteNetwork(network_id)
+{
+	if (!confirm("Are you sure you want to delete this network?")) {
+		return;
+	}
+
+	var url = "/api/admin/network";
+	var xhr = new XMLHttpRequest();
+	xhr.open("DELETE", url, true);
+	xhr.setRequestHeader("Content-Type", "application/json");
+	xhr.onreadystatechange = function () {
+		if (xhr.readyState === 4) {
+			var json = JSON.parse(xhr.responseText);
+			if (json["success"] == true) {
+				CreateNotification("Network deleted successfully.", "success");
+				//Update networks
+				FetchAdminNetworks(function(json) {
+					AdminChangeTab('networks');
+				});
+			}
+			else
+			{
+				if (json["error"] != null) {
+					CreateNotification(json["error"], "error");
+				}
+				else {
+					CreateNotification("An error occurred while deleting the network. Please try again later.", "error");
+				}
+			}
+		}
+	};
+	var data = JSON.stringify({"id": network_id});
+	xhr.send(data);
+
+	console.log("Deleting network...");
+}
+
+function SyncAdminNetworks(callback)
+{
+	var url = "/api/admin/networks/sync";
+	var xhr = new XMLHttpRequest();
+	xhr.open("POST", url, true);
+	xhr.setRequestHeader("Content-Type", "application/json");
+	xhr.onreadystatechange = function () {
+		if (xhr.readyState === 4) {
+			// Don't error if sync failed, just log/notify and proceed to list whatever we have
+			if (xhr.status == 200) {
+				console.log("Networks synced.");
+			} else {
+				console.log("Network sync failed or unauthorized.");
+			}
+			if (callback) callback();
+		}
+	};
+	xhr.send();
 }
 
 function UpdateImageStatusDisplay(images)

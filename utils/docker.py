@@ -90,13 +90,18 @@ def force_pull_required_images():
 				
 			required_images.append({
 				"name": image,
-				"description": f"Droplet: {droplet.display_name}"
+				"description": f"Droplet: {droplet.display_name}",
+				"auth_config": {
+					"username": droplet.registry_username,
+					"password": droplet.registry_password
+				} if droplet.registry_username and droplet.registry_password else None
 			})
 
 		# Pull all required images
 		for img_info in required_images:
 			image_name = img_info["name"]
 			description = img_info["description"]
+			auth_config = img_info.get("auth_config")
 			
 			log("INFO", f"Pulling required Docker image {image_name} ({description})")
 			try:
@@ -110,7 +115,11 @@ def force_pull_required_images():
 					base_image = image_name
 					tag = "latest"
 				
-				docker_client.images.pull(base_image, tag, platform="linux/amd64")
+				if auth_config:
+					log("INFO", f"Using authenticated pull for {image_name}")
+					docker_client.images.pull(base_image, tag, auth_config=auth_config, platform="linux/amd64")
+				else:
+					docker_client.images.pull(base_image, tag, platform="linux/amd64")
 				log("INFO", f"Successfully pulled required Docker image {image_name} ({description})")
 			except Exception as e:
 				log("ERROR", f"Error pulling required Docker image {image_name} ({description}): {e}")
@@ -153,13 +162,18 @@ def pull_images():
 				
 			required_images.append({
 				"name": image,
-				"description": f"Droplet: {droplet.display_name}"
+				"description": f"Droplet: {droplet.display_name}",
+				"auth_config": {
+					"username": droplet.registry_username,
+					"password": droplet.registry_password
+				} if droplet.registry_username and droplet.registry_password else None
 			})
 
 		# Pull all required images
 		for img_info in required_images:
 			image_name = img_info["name"]
 			description = img_info["description"]
+			auth_config = img_info.get("auth_config")
 			
 			log("INFO", f"Pulling required Docker image {image_name} ({description})")
 			try:
@@ -173,7 +187,11 @@ def pull_images():
 					base_image = image_name
 					tag = "latest"
 				
-				docker_client.images.pull(base_image, tag, platform="linux/amd64")
+				if auth_config:
+					log("INFO", f"Using authenticated pull for {image_name}")
+					docker_client.images.pull(base_image, tag, auth_config=auth_config, platform="linux/amd64")
+				else:
+					docker_client.images.pull(base_image, tag, platform="linux/amd64")
 				log("INFO", f"Successfully pulled required Docker image {image_name} ({description})")
 			except Exception as e:
 				log("ERROR", f"Error pulling required Docker image {image_name} ({description}): {e}")
@@ -206,11 +224,13 @@ def check_image_exists(registry, image_name):
 		log("ERROR", f"Error checking if image exists: {str(e)}")
 		return False
 
-def pull_single_image(registry, image_name):
-	"""Pull a single Docker image and return success status and message"""
-	if not docker_client:
-		return False, "Docker client not available"
-	
+def pull_single_image(registry, image_name, auth_config=None):
+	"""
+	Pull a single Docker image
+	"""
+	if not init_docker():
+		return False, "Docker is not available"
+
 	try:
 		# Validate image name is not empty
 		if not image_name or not image_name.strip():
@@ -234,7 +254,13 @@ def pull_single_image(registry, image_name):
 			tag = "latest"
 		
 		log("INFO", f"Manually pulling Docker image {full_image}")
-		docker_client.images.pull(repository, tag, platform="linux/amd64")
+		
+		if auth_config:
+			log("INFO", f"Using authenticated pull for {registry}")
+			docker_client.images.pull(repository, tag, auth_config=auth_config, platform="linux/amd64")
+		else:
+			docker_client.images.pull(repository, tag, platform="linux/amd64")
+
 		log("INFO", f"Successfully pulled Docker image {full_image}")
 		return True, f"Successfully pulled {full_image}"
 		
@@ -300,6 +326,82 @@ def get_images_status():
 			
 		return status
 		
+		return status
+		
 	except Exception as e:
 		log("ERROR", f"Error getting images status: {str(e)}")
 		return {}
+
+def create_network(name, driver="bridge", subnet=None, gateway=None):
+	"""Create a new Docker network"""
+	if not init_docker():
+		return False, "Docker is not available"
+
+	try:
+		ipam_config = None
+		if subnet:
+			ipam_pool = docker.types.IPAMPool(
+				subnet=subnet,
+				gateway=gateway
+			)
+			ipam_config = docker.types.IPAMConfig(
+				pool_configs=[ipam_pool]
+			)
+
+		docker_client.networks.create(
+			name,
+			driver=driver,
+			ipam=ipam_config,
+			check_duplicate=True
+		)
+		log("INFO", f"Created Docker network {name}")
+		return True, f"Network {name} created successfully"
+	except Exception as e:
+		log("ERROR", f"Error creating network {name}: {str(e)}")
+		return False, str(e)
+
+def delete_network(name):
+	"""Delete a Docker network"""
+	if not init_docker():
+		return False, "Docker is not available"
+
+	try:
+		networks = docker_client.networks.list(names=[name])
+		for network in networks:
+			if network.name == name:
+				network.remove()
+				log("INFO", f"Deleted Docker network {name}")
+				return True, f"Network {name} deleted successfully"
+		return False, "Network not found"
+	except Exception as e:
+		log("ERROR", f"Error deleting network {name}: {str(e)}")
+		return False, str(e)
+
+def get_networks():
+	"""Get list of Docker networks"""
+	if not init_docker():
+		return []
+
+	try:
+		networks = docker_client.networks.list()
+		network_list = []
+		for network in networks:
+			# Skip default networks usually
+			# if network.name in ['bridge', 'host', 'none']:
+			# 	continue
+				
+			config = network.attrs.get('IPAM', {}).get('Config', [])
+			subnet = config[0].get('Subnet') if config else None
+			gateway = config[0].get('Gateway') if config else None
+			
+			network_list.append({
+				"id": network.id,
+				"name": network.name,
+				"driver": network.attrs.get('Driver'),
+				"subnet": subnet,
+				"gateway": gateway
+			})
+		return network_list
+	except Exception as e:
+		log("ERROR", f"Error listing networks: {str(e)}")
+		return []

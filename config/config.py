@@ -26,6 +26,15 @@ def configure_app(app, config=None):
 
 	app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 	
+	# Fix for PostgreSQL connection handling in Docker/k8s environments
+	# "server closed the connection unexpectedly" and "PGRES_TUPLES_OK" errors
+	app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+		'pool_pre_ping': True,
+		'pool_recycle': 300,
+		'pool_size': 10,
+		'max_overflow': 20
+	}
+	
 	os.makedirs("data", exist_ok=True)
 	
 	# Load secret key
