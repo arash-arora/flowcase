@@ -12,7 +12,14 @@ auth_bp = Blueprint('auth', __name__)
 
 @login_manager.user_loader
 def load_user(user_id):
-	return db.session.get(User, user_id)
+	try:
+		return db.session.get(User, user_id)
+	except IndexError:
+		log(f"SQLAlchemy IndexError in load_user for user_id {user_id}. This is likely a transient issue.")
+		return None
+	except Exception as e:
+		log(f"Error loading user {user_id}: {e}")
+		return None
 
 @auth_bp.route('/')
 def index():

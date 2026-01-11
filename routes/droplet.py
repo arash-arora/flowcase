@@ -17,13 +17,15 @@ from models.user import User
 from utils.logger import log
 import utils.docker
 import threading
+from pathlib import Path
+
 
 def timeout_wrapper(func, timeout_seconds=300):
 	"""Execute a function with a timeout, returning (success, result/error)"""
 	result = [None]
 	error = [None]
 	completed_event = threading.Event()
-	
+
 	def target():
 		try:
 			result[0] = func()
@@ -31,11 +33,11 @@ def timeout_wrapper(func, timeout_seconds=300):
 			error[0] = str(e)
 		finally:
 			completed_event.set()
-	
+
 	thread = threading.Thread(target=target)
 	thread.daemon = True
 	thread.start()
-	
+
 	# Wait for completion or timeout using Event
 	if completed_event.wait(timeout=timeout_seconds):
 		if error[0]:
@@ -52,17 +54,17 @@ def get_droplets():
 	from utils.permissions import Permissions
 	droplets = Droplet.query.all()
 	droplets = sorted(droplets, key=lambda x: x.display_name)
- 
+
 	response = {
 		"success": True,
 		"droplets": []
 	}
- 
+
 	for droplet in droplets:
 		# Check if user has access to this droplet based on group membership
 		if not Permissions.user_in_groups(current_user.id, droplet.allowed_groups):
 			continue
-		
+
 		response["droplets"].append({
 			"id": droplet.id,
 			"display_name": droplet.display_name,
@@ -76,19 +78,19 @@ def get_droplets():
 			"server_ip": droplet.server_ip,
 			"server_port": droplet.server_port,
 		})
- 
+
 	return jsonify(response)
 
 @droplet_bp.route('/api/instances', methods=['GET'])
 @login_required
 def get_instances():
 	instances = DropletInstance.query.filter_by(user_id=current_user.id).all()
- 
+
 	response = {
 		"success": True,
 		"instances": []
 	}
- 
+
 	for instance in instances:
 		droplet = Droplet.query.filter_by(id=instance.droplet_id).first()
 		response["instances"].append({
@@ -109,7 +111,7 @@ def get_instances():
 				"server_port": droplet.server_port,
 			}
 		})
- 
+
 	return jsonify(response)
 
 @droplet_bp.route('/api/instance/request', methods=['POST'])
@@ -163,29 +165,29 @@ def request_new_instance():
 			if image.tags and image_name in image.tags:
 				image_exists = True
 				break
-			
+
 		if not image_exists:
 			log("WARNING", f"Docker image {droplet.container_docker_image} not found. Please wait a few minutes and try again.")
 			return jsonify({"success": False, "error": "Docker image not found. Image might still be downloading."}), 400
-		
+
 			"""
 			try:
 				# Use the existing pull_single_image function with timeout
 				def pull_with_timeout():
 					return utils.docker.pull_single_image(
-						droplet.container_docker_registry, 
+						droplet.container_docker_registry,
 						droplet.container_docker_image
 					)
-				
+
 				success, message = timeout_wrapper(pull_with_timeout, timeout_seconds=300)
-				
+
 				if not success:
 					if "timed out" in message:
 						return jsonify({"success": False, "error": "Image download timed out. Please try again or download manually from the admin panel."}), 408
 					else:
 						log("ERROR", f"Failed to pull Docker image {image_name}: {message}")
 						return jsonify({"success": False, "error": f"Failed to download Docker image. Error: {message}"}), 400
-				
+
 				log("INFO", f"Successfully pulled Docker image {image_name}")
 			except Exception as e:
 				log("ERROR", f"Failed to pull Docker image {image_name}: {str(e)}")
@@ -196,39 +198,84 @@ def request_new_instance():
 		instance = DropletInstance(droplet_id=droplet_id, user_id=current_user.id)
 		db.session.add(instance)
 		db.session.commit()
-	
+
 		# Create a docker container
 		log("INFO", f"Creating new instance for user {current_user.username} with droplet {droplet.display_name}")
-	
+
 		name = f"flowcase_generated_{instance.id}"
-	
+
 		request_resolution = request.json.get('resolution')
 		if request_resolution and len(request_resolution) < 10 and re.match(r"[0-9]+x[0-9]+", request_resolution):
 			resolution = request_resolution
 		else:
 			resolution = "1280x720"
-	
+
 		# Persistent Profile
 		mount = None
-		if droplet.container_persistent_profile_path and droplet.container_persistent_profile_path != "" and not isGuacDroplet:
-			
+		if (
+			droplet.container_persistent_profile_path
+			and droplet.container_persistent_profile_path != ""
+			and not isGuacDroplet
+		):
 			profilePath = droplet.container_persistent_profile_path
-	
+
 			# Replace variables
 			profilePath = profilePath.replace("{user_id}", str(current_user.id))
 			profilePath = profilePath.replace("{username}", current_user.username)
 			profilePath = profilePath.replace("{droplet_id}", str(droplet_id))
-	
-			# Ensure path ends with /
-			if profilePath[-1] != "/":
-				profilePath += "/"
 
-			mount = docker.types.Mount(target="/home/flowcase-user", source=profilePath, type="bind", consistency="[r]private")
-	
-			# Hack: the first time the mount is created, the container will crash, so we start the container twice
-			# this should be fixed in the core droplets
-			if not os.path.exists(profilePath + ".bashrc"):
+			profilePath = Path(profilePath).resolve()
+			
+			# Create the directory with proper error handling
+			try:
+				# Ensure parent directory exists first
+				parent_dir = profilePath.parent
+				if not parent_dir.exists():
+					log("INFO", f"Creating parent directory: {parent_dir}")
+					parent_dir.mkdir(parents=True, exist_ok=True)
+
+				# Create the actual profile directory
+				log("INFO", f"Creating profile directory: {profilePath}")
+				profilePath.mkdir(parents=True, exist_ok=True)
+
+				# Verify the directory was created successfully
+				if not profilePath.exists():
+					raise RuntimeError(f"Failed to create profile directory: {profilePath}")
+				
+				if not profilePath.is_dir():
+					raise RuntimeError(f"Profile path exists but is not a directory: {profilePath}")
+				
+				# Check if directory is writable
+				if not os.access(str(profilePath), os.W_OK):
+					raise RuntimeError(f"Profile directory exists but is not writable: {profilePath}")
+				
+				log("INFO", f"Successfully created and verified profile directory: {profilePath}")
+
+			except PermissionError as e:
+				error_msg = f"Permission denied creating profile directory {profilePath}: {str(e)}"
+				log("ERROR", error_msg)
+				db.session.delete(instance)
+				db.session.commit()
+				return jsonify({"success": False, "error": error_msg}), 500
+			except Exception as e:
+				error_msg = f"Error creating profile directory {profilePath}: {str(e)}"
+				log("ERROR", error_msg)
+				db.session.delete(instance)
+				db.session.commit()
+				return jsonify({"success": False, "error": error_msg}), 500
+
+			mount = docker.types.Mount(
+				target="/home/flowcase-user",
+				source=str(profilePath),
+				type="bind",
+				consistency="private"
+			)
+
+			# Warm-up hack: first bind initializes profile
+			bashrc_path = profilePath / ".bashrc"
+			if not bashrc_path.exists():
 				try:
+					log("INFO", f"Running profile warm-up container for {profilePath}")
 					container = utils.docker.docker_client.containers.run(
 						image=image_name,
 						detach=True,
@@ -239,12 +286,10 @@ def request_new_instance():
 					time.sleep(1)
 					container.stop()
 					container.remove(force=True)
+					log("INFO", f"Profile warm-up completed for {profilePath}")
 				except Exception as e:
-					log("ERROR", f"Error creating profile directory structure: {str(e)}")
-					db.session.delete(instance)
-					db.session.commit()
-					return jsonify({"success": False, "error": "Failed to setup persistent profile"}), 500
-		
+					log("WARNING", f"Profile warm-up container failed: {e}")
+
 		# Create the container
 		try:
 			network_name = "flowcase_default_network"
@@ -265,7 +310,7 @@ def request_new_instance():
 					cpu_shares=int(droplet.container_cores * 1024),
 					mounts=[mount] if mount else None,
 				)
-				
+
 				# If we are using a custom network, we MUST also connect to the default network
 				# so that the Nginx proxy (which is on the default network) can reach this container.
 				if network_name != "flowcase_default_network":
@@ -286,18 +331,18 @@ def request_new_instance():
 					detach=True,
 					network="flowcase_default_network",
 				)
-	
+
 			log("INFO", f"Instance created for user {current_user.username} with droplet {droplet.display_name}")
-	
+
 			# Wait for container to start and verify it's running with timeout
 			max_wait_time = 30  # Maximum wait time in seconds
 			check_interval = 1  # Check every 1 second
 			waited_time = 0
-			
+
 			while waited_time < max_wait_time:
 				time.sleep(check_interval)
 				waited_time += check_interval
-				
+
 				try:
 					container.reload()
 					if container.status == 'running':
@@ -321,7 +366,7 @@ def request_new_instance():
 					db.session.delete(instance)
 					db.session.commit()
 					return jsonify({"success": False, "error": "Failed to verify container status"}), 500
-			
+
 			# Final check if we timed out
 			if waited_time >= max_wait_time:
 				log("ERROR", f"Container {name} startup timed out after {max_wait_time} seconds")
@@ -334,12 +379,12 @@ def request_new_instance():
 				db.session.delete(instance)
 				db.session.commit()
 				return jsonify({"success": False, "error": "Container startup timed out"}), 500
-	
+
 			# Create nginx config - get fresh container info
 			try:
 				container = utils.docker.docker_client.containers.get(f"flowcase_generated_{instance.id}")
 				networks = container.attrs['NetworkSettings']['Networks']
-				
+
 				# Get IP from flowcase_default_network
 				ip = None
 				# Get IP from network
@@ -348,29 +393,29 @@ def request_new_instance():
 					ip = networks['flowcase_default_network'].get('IPAddress')
 				elif network_name in networks:
 					ip = networks[network_name].get('IPAddress')
-				
+
 				# Fallback to the first network found if specific ones aren't there (shouldn't happen)
 				if not ip and networks:
 					first_net = list(networks.values())[0]
 					ip = first_net.get('IPAddress')
-				
+
 				if not ip:
 					log("ERROR", f"Could not find IP address for container {name} on flowcase_default_network")
 					container.remove(force=True)
 					db.session.delete(instance)
 					db.session.commit()
 					return jsonify({"success": False, "error": "Could not determine container IP address"}), 500
-					
+
 			except Exception as e:
 				log("ERROR", f"Error getting container network info: {str(e)}")
 				container.remove(force=True)
 				db.session.delete(instance)
 				db.session.commit()
 				return jsonify({"success": False, "error": "Failed to get container network information"}), 500
-	
+
 			# Generate nginx configuration
 			nginx_config = generate_nginx_config(instance, droplet, ip, current_user)
-	
+
 			try:
 				write_nginx_config(instance, nginx_config)
 			except Exception as e:
@@ -379,9 +424,9 @@ def request_new_instance():
 				db.session.delete(instance)
 				db.session.commit()
 				return jsonify({"success": False, "error": "Failed to write nginx configuration"}), 500
-			
+
 			reload_nginx()
-	
+
 		except Exception as e:
 			log("ERROR", f"Error creating container for user {current_user.username}: {str(e)}")
 			# Cleanup on failure
@@ -393,7 +438,7 @@ def request_new_instance():
 			db.session.delete(instance)
 			db.session.commit()
 			return jsonify({"success": False, "error": f"Failed to create container: {str(e)}"}), 500
-	
+
 		return jsonify({"success": True, "instance_id": instance.id})
 	except Exception as e:
 		log("ERROR", f"Unhandled exception in request_new_instance: {str(e)}")
@@ -402,12 +447,12 @@ def request_new_instance():
 
 def check_resources(droplet: Droplet) -> Tuple[bool, str]:
 	instances = DropletInstance.query.all()
-		
+
 	# Collect all droplet IDs and fetch droplets in a single query to avoid N+1 problem
 	droplet_ids = [instance.droplet_id for instance in instances]
 	droplets = Droplet.query.filter(Droplet.id.in_(droplet_ids)).all() if droplet_ids else []
 	droplet_dict = {droplet.id: droplet for droplet in droplets}
-	
+
 	total_allocated_memory = 0
 	total_allocated_cores = 0
 	for instance in instances:
@@ -415,49 +460,49 @@ def check_resources(droplet: Droplet) -> Tuple[bool, str]:
 		if instance_droplet:
 			total_allocated_cores += instance_droplet.container_cores
 			total_allocated_memory += instance_droplet.container_memory
-	
+
 	# Get system resources
 	system_cores = os.cpu_count()
 	total_memory = psutil.virtual_memory().total / 1024 / 1024  # Convert to MB
-	
+
 	# Calculate what would be used after adding this droplet
 	projected_memory_usage = total_allocated_memory + droplet.container_memory
 	projected_core_usage = total_allocated_cores + droplet.container_cores
-	
+
 	# Apply reasonable safety margins and allow oversubscription for CPU
 	# CPU: Allow 2x oversubscription (containers share CPU efficiently via CPU shares)
 	# Memory: Use 85% of total memory to leave room for system operations
 	max_allowed_memory = total_memory * 0.85
 	max_allowed_cores = system_cores * 2.0
-	
+
 	if projected_memory_usage > max_allowed_memory:
 		log("ERROR", f"Insufficient memory for user {current_user.username} to request droplet {droplet.display_name} - would use {projected_memory_usage}MB of {max_allowed_memory}MB allowed")
 		return False, "Insufficient memory to start this droplet"
-	
+
 	if projected_core_usage > max_allowed_cores:
 		log("ERROR", f"Insufficient CPU cores for user {current_user.username} to request droplet {droplet.display_name} - would use {projected_core_usage} of {max_allowed_cores} cores allowed")
 		return False, "Insufficient CPU cores to start this droplet"
-	
+
 	return True, ""
 
 def generate_nginx_config(instance: DropletInstance, droplet: Droplet, ip: str, user: User) -> str:
 	"""Generate nginx configuration for the instance."""
 	try:
 		authHeader = base64.b64encode(b'flowcase_user:' + user.auth_token.encode()).decode('utf-8')
-		
+
 		if droplet.droplet_type == "container":
 			template_path = f"config/nginx/container_template.conf"
 		else: # Guacamole droplet
 			template_path = f"config/nginx/guac_template.conf"
-		
+
 		log("INFO", f"Reading nginx template from {template_path}")
 		with open(template_path, "r") as f:
 			nginx_config = f.read()
-		
+
 		nginx_config = nginx_config.replace("{ip}", ip)
 		nginx_config = nginx_config.replace("{authHeader}", authHeader)
 		nginx_config = nginx_config.replace("{instance_id}", instance.id)
-		
+
 		log("INFO", f"Generated nginx config for instance {instance.id}: IP={ip}, type={droplet.droplet_type}")
 		return nginx_config
 	except FileNotFoundError as e:
@@ -471,7 +516,7 @@ def write_nginx_config(instance: DropletInstance, nginx_config: str):
 	"""Write nginx configuration for the instance."""
 	nginx_dir = "/flowcase/nginx/containers.d"
 	config_file = f"{nginx_dir}/{instance.id}.conf"
-	
+
 	try:
 		# Ensure directory exists
 		os.makedirs(nginx_dir, exist_ok=True)
@@ -511,15 +556,15 @@ def pull_droplet_image(droplet_id):
 	try:
 		# Use the existing pull_single_image function
 		success, message = utils.docker.pull_single_image(
-			droplet.container_docker_registry, 
+			droplet.container_docker_registry,
 			droplet.container_docker_image
 		)
-		
+
 		if success:
 			return jsonify({"success": True, "message": message})
 		else:
 			return jsonify({"success": False, "error": message}), 500
-			
+
 	except Exception as e:
 		log("ERROR", f"Error pulling image for droplet {droplet_id}: {str(e)}")
 		return jsonify({"success": False, "error": f"Failed to pull image: {str(e)}"}), 500
@@ -537,12 +582,12 @@ def generate_guac_token(droplet: Droplet, user: User) -> str:
 			}
 		},
 	}
- 
+
 	def encrypt_token(token, auth_token):
 		iv = os.urandom(16)  # 16 bytes for AES
 		auth_token = auth_token[:32]
 		cipher = AES.new(auth_token, AES.MODE_CBC, iv)
-  
+
 		# Convert value to JSON and pad it
 		padded_data = pad(json.dumps(token).encode(), AES.block_size)
 
@@ -560,7 +605,7 @@ def generate_guac_token(droplet: Droplet, user: User) -> str:
 		return base64.b64encode(json_data.encode()).decode('utf-8')
 
 	return encrypt_token(guac_token, user.auth_token.encode())
- 
+
 @droplet_bp.route('/droplet/<string:instance_id>', methods=['GET'])
 @login_required
 def droplet(instance_id: str):
@@ -597,12 +642,12 @@ def stop_instance(instance_id: str):
 	except Exception as e:
 		log("ERROR", f"Error removing container: {str(e)}")
 		pass
-  
+
 	# Delete nginx config
 	if os.path.exists(f"/flowcase/nginx/containers.d/{instance.id}.conf"):
 		os.remove(f"/flowcase/nginx/containers.d/{instance.id}.conf")
-	
+
 	db.session.delete(instance)
 	db.session.commit()
- 
+
 	return jsonify({"success": True})

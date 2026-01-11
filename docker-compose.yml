@@ -3,7 +3,6 @@ services:
     build:
       context: .
       dockerfile: web.Dockerfile
-    # image: flowcaseweb/flowcase
     container_name: flowcase-web
     restart: unless-stopped
     volumes:
@@ -49,6 +48,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-flowcase}
     volumes:
       - flowcase-db-data:/var/lib/postgresql/data
+      - ./db/backup:/backup
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-flowcase}"]
       interval: 10s
