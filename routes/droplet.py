@@ -224,7 +224,7 @@ def request_new_instance():
 			profilePath = profilePath.replace("{username}", current_user.username)
 			profilePath = profilePath.replace("{droplet_id}", str(droplet_id))
 
-			profilePath = Path(profilePath).resolve()
+			profilePath = Path(profilePath).expanduser().resolve()
 			
 			# Create the directory with proper error handling
 			try:

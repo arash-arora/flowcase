@@ -15,10 +15,10 @@ def load_user(user_id):
 	try:
 		return db.session.get(User, user_id)
 	except IndexError:
-		log(f"SQLAlchemy IndexError in load_user for user_id {user_id}. This is likely a transient issue.")
+		log("INFO",f"SQLAlchemy IndexError in load_user for user_id {user_id}. This is likely a transient issue.")
 		return None
 	except Exception as e:
-		log(f"Error loading user {user_id}: {e}")
+		log("INFO",f"Error loading user {user_id}: {e}")
 		return None
 
 @auth_bp.route('/')
@@ -61,7 +61,7 @@ def oidc_login():
 	redirect_uri = current_app.config.get('AUTHENTIK_REDIRECT_URI') or url_for('auth.oidc_callback', _external=True)
 	# Make sure the client was registered at app startup
 	if not hasattr(oauth, 'authentik'):
-		log('OIDC login attempted but oauth.client "authentik" is not registered')
+		log("INFO",'OIDC login attempted but oauth.client "authentik" is not registered')
 		session['error'] = 'OIDC client not configured. Check AUTHENTIK_ISSUER/CLIENT_ID/CLIENT_SECRET.'
 		return redirect(url_for('auth.index'))
 
@@ -69,7 +69,7 @@ def oidc_login():
 		return oauth.authentik.authorize_redirect(redirect_uri)
 	except Exception as e:
 		# Log the exception for debugging and give a helpful message to the UI
-		log(f'Failed to start OIDC authorization redirect: {e}')
+		log("INFO",f'Failed to start OIDC authorization redirect: {e}')
 		session['error'] = 'Unable to start OIDC login. Check server configuration and that the issuer URL exposes /.well-known/openid-configuration.'
 		return redirect(url_for('auth.index'))
 
@@ -80,7 +80,7 @@ def oidc_callback():
 	try:
 		token = oauth.authentik.authorize_access_token()
 	except Exception as e:
-		log(f'OIDC authorize_access_token error: {e}')
+		log("INFO",f'OIDC authorize_access_token error: {e}')
 		session['error'] = 'OIDC authorization failed. See server logs for details.'
 		return redirect(url_for('auth.index'))
 
@@ -97,16 +97,16 @@ def oidc_callback():
 			resp = oauth.authentik.get('userinfo')
 		userinfo = resp.json()
 	except requests.exceptions.MissingSchema as e:
-		log(f'Userinfo request failed due to missing schema (probably no userinfo endpoint configured): {e}')
+		log("INFO",f'Userinfo request failed due to missing schema (probably no userinfo endpoint configured): {e}')
 	except Exception as e:
-		log(f'Failed to fetch userinfo: {e}')
+		log("INFO",f'Failed to fetch userinfo: {e}')
 
 	if not userinfo:
 		# Fallback: try parsing id token
 		try:
 			userinfo = oauth.authentik.parse_id_token(token)
 		except Exception as e2:
-			log(f'Failed to parse id_token as fallback: {e2}')
+			log("INFO",f'Failed to parse id_token as fallback: {e2}')
 			session['error'] = 'Failed to get user information from OIDC provider.'
 			return redirect(url_for('auth.index'))
 
@@ -214,26 +214,40 @@ def droplet_connect():
 	if not userid or not token:
 		return make_response("", 401)
 
-	# Check cache
-	now = time.time()
-	cache_key = (userid, token)
-	if cache_key in _auth_cache:
-		if now - _auth_cache[cache_key] < _AUTH_CACHE_TTL:
+	from sqlalchemy.exc import OperationalError, DatabaseError
+	
+	retries = 2
+	for attempt in range(retries):
+		try:
+			# Check cache
+			now = time.time()
+			cache_key = (userid, token)
+			if cache_key in _auth_cache:
+				if now - _auth_cache[cache_key] < _AUTH_CACHE_TTL:
+					return make_response("", 200)
+				else:
+					del _auth_cache[cache_key]
+
+			user = User.query.filter_by(id=userid).first()
+			if not user:
+				return make_response("", 401)
+
+			if user.auth_token != token:
+				return make_response("", 401)
+			
+			# Update cache
+			_auth_cache[cache_key] = now
+			
 			return make_response("", 200)
-		else:
-			del _auth_cache[cache_key]
 
-	user = User.query.filter_by(id=userid).first()
-	if not user:
-		return make_response("", 401)
-
-	if user.auth_token != token:
-		return make_response("", 401)
-	
-	# Update cache
-	_auth_cache[cache_key] = now
-	
-	return make_response("", 200)
+		except (OperationalError, DatabaseError, Exception) as e:
+			db.session.rollback()
+			if attempt < retries - 1:
+				log("INFO",f"DB Error in droplet_connect, retrying: {e}")
+				db.session.remove() 
+				continue
+			log("INFO",f"Final DB Error in droplet_connect: {e}")
+			return make_response("", 500)
 
 def generate_auth_token() -> str:
 	return ''.join(random.choice(string.ascii_letters + string.digits) for i in range(80))

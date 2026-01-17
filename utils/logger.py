@@ -6,10 +6,15 @@ def log(level: str, message: str):
 	from models.log import Log
 	
 	log_entry = Log(level=level, message=message)
-	db.session.add(log_entry)
-	db.session.commit()
-	
-	timestamp = log_entry.created_at.strftime('%Y-%m-%d %H:%M:%S')
+	try:
+		db.session.add(log_entry)
+		db.session.commit()
+		timestamp = log_entry.created_at.strftime('%Y-%m-%d %H:%M:%S')
+	except Exception as e:
+		db.session.rollback()
+		print(f"FAILED TO LOG TO DB: {message} | Error: {e}", flush=True)
+		import datetime
+		timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 	
 	# Only print DEBUG logs if in debug mode
 	from config.config import parse_args

@@ -22,15 +22,7 @@ loglevel = "info"
 
 proc_name = "flowcase"
 
-preload_app = True
-
-def post_fork(server, worker):
-	os.environ['GUNICORN_WORKER_ID'] = str(worker.age)
-
-	from utils.docker import init_docker
-	docker_client = init_docker()
-	if not docker_client:
-		print(f"Warning: Failed to initialize Docker client in worker {worker.age}")
+preload_app = False
 
 def on_starting(server):
 	from __init__ import db, initialize_database_and_setup
