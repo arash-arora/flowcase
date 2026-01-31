@@ -7,24 +7,26 @@ from flask_login import login_user, logout_user, login_required, current_user
 from __init__ import db, bcrypt, login_manager, oauth
 from models.user import User, Group
 from utils.logger import log
-
 auth_bp = Blueprint('auth', __name__)
-
 @login_manager.user_loader
 def load_user(user_id):
-	return db.session.get(User, user_id)
-
+	try:
+		return db.session.get(User, user_id)
+	except IndexError:
+		log("INFO",f"SQLAlchemy IndexError in load_user for user_id {user_id}. This is likely a transient issue.")
+		return None
+	except Exception as e:
+		log("INFO",f"Error loading user {user_id}: {e}")
+		return None
 @auth_bp.route('/')
 def index():
 	if current_user.is_authenticated:
 		return redirect(url_for('auth.dashboard'))
 	return render_template('login.html', error=session.pop('error', None))
-
 @auth_bp.route('/dashboard')
 @login_required
 def dashboard():
 	return render_template('dashboard.html')
-
 @auth_bp.route('/login', methods=['POST'])
 def login():
 	username = request.form['username']
@@ -34,19 +36,16 @@ def login():
 	
 	if user and bcrypt.check_password_hash(user.password, password):
 		login_user(user, remember=remember)
-
 		response = make_response(redirect(url_for('auth.dashboard')))
   
 		cookie_age = 60 * 60 * 24 * 365 if remember else None
-		response.set_cookie('userid', user.id, max_age=cookie_age)
-		response.set_cookie('username', user.username, max_age=cookie_age)
-		response.set_cookie('token', user.auth_token, max_age=cookie_age)
+		response.set_cookie('userid', user.id, max_age=cookie_age, path='/', samesite='Lax')
+		response.set_cookie('username', user.username, max_age=cookie_age, path='/', samesite='Lax')
+		response.set_cookie('token', user.auth_token, max_age=cookie_age, path='/', samesite='Lax')
 		return response
 	else:
 		session['error'] = "Invalid username or password."
 		return redirect(url_for('auth.index'))
-
-
 @auth_bp.route('/oidc/login')
 def oidc_login():
 	"""Start OIDC flow with authentik."""
@@ -54,29 +53,25 @@ def oidc_login():
 	redirect_uri = current_app.config.get('AUTHENTIK_REDIRECT_URI') or url_for('auth.oidc_callback', _external=True)
 	# Make sure the client was registered at app startup
 	if not hasattr(oauth, 'authentik'):
-		log('OIDC login attempted but oauth.client "authentik" is not registered')
+		log("INFO",'OIDC login attempted but oauth.client "authentik" is not registered')
 		session['error'] = 'OIDC client not configured. Check AUTHENTIK_ISSUER/CLIENT_ID/CLIENT_SECRET.'
 		return redirect(url_for('auth.index'))
-
 	try:
 		return oauth.authentik.authorize_redirect(redirect_uri)
 	except Exception as e:
 		# Log the exception for debugging and give a helpful message to the UI
-		log(f'Failed to start OIDC authorization redirect: {e}')
+		log("INFO",f'Failed to start OIDC authorization redirect: {e}')
 		session['error'] = 'Unable to start OIDC login. Check server configuration and that the issuer URL exposes /.well-known/openid-configuration.'
 		return redirect(url_for('auth.index'))
-
-
 @auth_bp.route('/oidc/callback')
 def oidc_callback():
 	"""Handle callback from authentik and map (or create) a local user."""
 	try:
 		token = oauth.authentik.authorize_access_token()
 	except Exception as e:
-		log(f'OIDC authorize_access_token error: {e}')
+		log("INFO",f'OIDC authorize_access_token error: {e}')
 		session['error'] = 'OIDC authorization failed. See server logs for details.'
 		return redirect(url_for('auth.index'))
-
 	# Try to fetch userinfo
 	# Try to fetch userinfo. Prefer an explicit configured URL if present.
 	userinfo = None
@@ -90,24 +85,21 @@ def oidc_callback():
 			resp = oauth.authentik.get('userinfo')
 		userinfo = resp.json()
 	except requests.exceptions.MissingSchema as e:
-		log(f'Userinfo request failed due to missing schema (probably no userinfo endpoint configured): {e}')
+		log("INFO",f'Userinfo request failed due to missing schema (probably no userinfo endpoint configured): {e}')
 	except Exception as e:
-		log(f'Failed to fetch userinfo: {e}')
-
+		log("INFO",f'Failed to fetch userinfo: {e}')
 	if not userinfo:
 		# Fallback: try parsing id token
 		try:
 			userinfo = oauth.authentik.parse_id_token(token)
 		except Exception as e2:
-			log(f'Failed to parse id_token as fallback: {e2}')
+			log("INFO",f'Failed to parse id_token as fallback: {e2}')
 			session['error'] = 'Failed to get user information from OIDC provider.'
 			return redirect(url_for('auth.index'))
-
 	username = userinfo.get('preferred_username') or userinfo.get('email') or userinfo.get('sub')
 	if not username:
 		session['error'] = 'OIDC provider did not return a usable username.'
 		return redirect(url_for('auth.index'))
-
 	# Extract groups from SSO and map them to local Group records (create Group if missing)
 	def _extract_sso_groups(info):
 		"""Return a list of group tokens (strings) from userinfo or id_token.
@@ -140,7 +132,6 @@ def oidc_callback():
 			return [g for g in out if g]
 		# Unknown format
 		return []
-
 	# Map SSO groups to existing local Group IDs only (do NOT auto-create groups)
 	sso_group_tokens = _extract_sso_groups(userinfo)
 	mapped_group_ids = []
@@ -154,16 +145,13 @@ def oidc_callback():
 			group = Group.query.filter_by(display_name=token).first()
 		if group:
 			mapped_group_ids.append(group.id)
-
 	# If no mapped groups found, default to the local "User" group (if it exists)
 	if not mapped_group_ids:
 		default_group = Group.query.filter_by(display_name='User').first() or Group.query.filter_by(display_name='user').first()
 		if default_group:
 			mapped_group_ids = [default_group.id]
-
 	# Normalize to comma-separated string for storage
 	groups_csv = ','.join(mapped_group_ids) if mapped_group_ids else ''
-
 	user = User.query.filter_by(username=username).first()
 	if not user:
 		# create a local user with a random password and groups from SSO
@@ -173,7 +161,6 @@ def oidc_callback():
 		# Update user's groups on each login to reflect SSO
 		user.groups = groups_csv
 		db.session.commit()
-
 	login_user(user)
 	response = make_response(redirect(url_for('auth.dashboard')))
 	# preserve same cookie semantics as password login
@@ -181,7 +168,6 @@ def oidc_callback():
 	response.set_cookie('username', user.username)
 	response.set_cookie('token', user.auth_token)
 	return response
-
 @auth_bp.route('/logout')
 @login_required
 def logout():
@@ -193,53 +179,64 @@ def logout():
 	response.set_cookie('username', '', expires=0)
 	response.set_cookie('token', '', expires=0)
 	return response
-
 # Simple in-memory cache for auth tokens to reduce DB load
 # Key: (userid, token), Value: timestamp
 _auth_cache = {}
 _AUTH_CACHE_TTL = 300  # 5 minutes
-
 @auth_bp.route('/droplet_connect', methods=['GET'])
 def droplet_connect():
 	userid = request.cookies.get("userid")
 	token = request.cookies.get("token")
- 
+	
+	try:
+		print(f"DEBUG DROPLET_CONNECT | Cookies: {request.cookies} | Headers: {request.headers}", flush=True)
+	except:
+		pass
 	if not userid or not token:
+		print(f"DEBUG DROPLET_CONNECT | Missing userid or token. UserID: {userid}, Token: {token}", flush=True)
 		return make_response("", 401)
-
-	# Check cache
-	now = time.time()
-	cache_key = (userid, token)
-	if cache_key in _auth_cache:
-		if now - _auth_cache[cache_key] < _AUTH_CACHE_TTL:
+	from sqlalchemy.exc import OperationalError, DatabaseError
+	
+	retries = 2
+	for attempt in range(retries):
+		try:
+			# Check cache
+			now = time.time()
+			cache_key = (userid, token)
+			if cache_key in _auth_cache:
+				if now - _auth_cache[cache_key] < _AUTH_CACHE_TTL:
+					return make_response("", 200)
+				else:
+					del _auth_cache[cache_key]
+			user = User.query.filter_by(id=userid).first()
+			if not user:
+				return make_response("", 401)
+			if user.auth_token != token:
+				return make_response("", 401)
+			
+			# Update cache
+			_auth_cache[cache_key] = now
+			
 			return make_response("", 200)
-		else:
-			del _auth_cache[cache_key]
-
-	user = User.query.filter_by(id=userid).first()
-	if not user:
-		return make_response("", 401)
-
-	if user.auth_token != token:
-		return make_response("", 401)
-	
-	# Update cache
-	_auth_cache[cache_key] = now
-	
-	return make_response("", 200)
-
+		except (OperationalError, DatabaseError, Exception) as e:
+			db.session.rollback()
+			if attempt < retries - 1:
+				log("INFO",f"DB Error in droplet_connect, retrying: {e}")
+				db.session.remove() 
+				continue
+			log("INFO",f"Final DB Error in droplet_connect: {e}")
+			return make_response("", 500)
 def generate_auth_token() -> str:
 	return ''.join(random.choice(string.ascii_letters + string.digits) for i in range(80))
-
 def create_user(username, password, groups):
 	# Accept groups as list or comma-separated string
 	if isinstance(groups, list):
 		groups_val = ','.join(groups)
 	else:
 		groups_val = groups or ''
-
 	user = User(username=username, password=bcrypt.generate_password_hash(password).decode('utf-8'), 
 				groups=groups_val, auth_token=generate_auth_token())
 	db.session.add(user)
 	db.session.commit()
 	return user 
+
