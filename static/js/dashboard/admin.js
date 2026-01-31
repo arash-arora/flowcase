@@ -1192,6 +1192,7 @@ function ShowEditDroplet(instance_id = null)
 			<input type="number" id="admin-edit-droplet-memory" value="${ droplet != null ? droplet.container_memory : "" }">
 		</div>
 
+		<div class="admin-modal-card">
 			<p>Persistant Profile Path</p>
 			<input type="text" id="admin-edit-droplet-persistent-profile" value="${ droplet != null ? droplet.container_persistent_profile_path ? droplet.container_persistent_profile_path : "" : "" }">
 		</div>

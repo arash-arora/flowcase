@@ -4,6 +4,9 @@ import os
 from flask import Blueprint, jsonify, request
 from flask_login import login_required, current_user
 from sqlalchemy.sql import func
+
+admin_bp = Blueprint('admin', __name__)
+
 from __init__ import db, bcrypt, __version__
 from models.user import User, Group
 from models.droplet import Droplet, DropletInstance
@@ -13,8 +16,6 @@ from models.log import Log
 from utils.permissions import Permissions
 from utils.logger import log
 import utils.docker
-
-admin_bp = Blueprint('admin', __name__)
 
 @admin_bp.route('/system_info', methods=['GET'])
 @login_required
@@ -104,11 +105,22 @@ def api_admin_instances():
 			droplet = Droplet.query.filter_by(id=instance.droplet_id).first()
 			user = User.query.filter_by(id=instance.user_id).first()
 			container = utils.docker.docker_client.containers.get(f"flowcase_generated_{instance.id}")
+			# Get IP address - try default network, then custom network, then any network
+			ip = None
+			networks = container.attrs['NetworkSettings']['Networks']
+			if 'flowcase_default_network' in networks:
+				ip = networks['flowcase_default_network']['IPAddress']
+			elif networks:
+				# Use the first available network's IP
+				ip = list(networks.values())[0]['IPAddress']
+			else:
+				ip = "Unknown" 
+
 			response["instances"].append({
 				"id": instance.id,
 				"created_at": instance.created_at,
 				"updated_at": instance.updated_at,
-				"ip": container.attrs['NetworkSettings']['Networks']['flowcase_default_network']['IPAddress'],
+				"ip": ip,
 				"droplet": {
 					"id": droplet.id,
 					"display_name": droplet.display_name,

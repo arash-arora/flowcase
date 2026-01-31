@@ -48,6 +48,11 @@ def configure_app(app, config=None):
 	if config:
 		app.config.update(config)
 
+	# Ensure cookies work over HTTP for IP access
+	app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+	app.config['SESSION_COOKIE_SECURE'] = False
+	app.config['SESSION_COOKIE_PATH'] = '/'
+
 	# OIDC / Authentik config - prefer environment variables
 	app.config['AUTHENTIK_ISSUER'] = os.environ.get('AUTHENTIK_ISSUER')
 	app.config['AUTHENTIK_CLIENT_ID'] = os.environ.get('AUTHENTIK_CLIENT_ID')

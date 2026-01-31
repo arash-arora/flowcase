@@ -38,9 +38,9 @@ def login():
 		response = make_response(redirect(url_for('auth.dashboard')))
   
 		cookie_age = 60 * 60 * 24 * 365 if remember else None
-		response.set_cookie('userid', user.id, max_age=cookie_age)
-		response.set_cookie('username', user.username, max_age=cookie_age)
-		response.set_cookie('token', user.auth_token, max_age=cookie_age)
+		response.set_cookie('userid', user.id, max_age=cookie_age, path='/', samesite='Lax')
+		response.set_cookie('username', user.username, max_age=cookie_age, path='/', samesite='Lax')
+		response.set_cookie('token', user.auth_token, max_age=cookie_age, path='/', samesite='Lax')
 		return response
 	else:
 		session['error'] = "Invalid username or password."
@@ -203,8 +203,14 @@ _AUTH_CACHE_TTL = 300  # 5 minutes
 def droplet_connect():
 	userid = request.cookies.get("userid")
 	token = request.cookies.get("token")
- 
+	
+	try:
+		print(f"DEBUG DROPLET_CONNECT | Cookies: {request.cookies} | Headers: {request.headers}", flush=True)
+	except:
+		pass
+
 	if not userid or not token:
+		print(f"DEBUG DROPLET_CONNECT | Missing userid or token. UserID: {userid}, Token: {token}", flush=True)
 		return make_response("", 401)
 
 	# Check cache
