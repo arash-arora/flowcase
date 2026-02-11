@@ -123,4 +123,4 @@ def initialize_database_and_setup():
 
     from utils.scheduler import start_scheduler
 
-    start_scheduler(current_app)
+    start_scheduler(current_app._get_current_object())

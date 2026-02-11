@@ -40,6 +40,10 @@ def cleanup_inactive_droplets(app):
                             f"Destroying inactive instance {instance.id} (Last active: {instance.last_active_at})",
                         )
 
+                        # Ensure docker client is available
+                        if not utils.docker.docker_client:
+                            utils.docker.init_docker()
+
                         # Remove docker container
                         if utils.docker.docker_client:
                             try:
@@ -48,8 +52,22 @@ def cleanup_inactive_droplets(app):
                                 )
                                 container.remove(force=True)
                             except Exception as e:
-                                # Container might already be gone
-                                pass
+                                # Check for NotFound error (using string check to avoid extra import or if docker lib varies)
+                                if "404" in str(e) or "not found" in str(e).lower():
+                                    pass
+                                else:
+                                    log(
+                                        "ERROR",
+                                        f"Failed to remove container for {instance.id}: {e}",
+                                    )
+                                    # If container exists but couldn't be removed, do not remove from DB
+                                    continue
+                        else:
+                            log(
+                                "ERROR",
+                                f"Docker client not available, skipping cleanup for {instance.id}",
+                            )
+                            continue
 
                         # Remove nginx config
                         nginx_config_path = (
