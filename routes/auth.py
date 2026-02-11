@@ -192,6 +192,7 @@ def droplet_connect():
 		print(f"DEBUG DROPLET_CONNECT | Cookies: {request.cookies} | Headers: {request.headers}", flush=True)
 	except:
 		pass
+
 	if not userid or not token:
 		print(f"DEBUG DROPLET_CONNECT | Missing userid or token. UserID: {userid}, Token: {token}", flush=True)
 		return make_response("", 401)
