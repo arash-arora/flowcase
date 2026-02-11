@@ -25,6 +25,16 @@
 					"image_path": "{{ droplet.image_path }}",
 				}
 			};
+
+			// Heartbeat to keep droplet alive
+			setInterval(function() {
+				fetch('/api/instance/' + instanceInfo.id + '/heartbeat', {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json'
+					}
+				}).catch(err => console.error("Heartbeat failed", err));
+			}, 60000); // 1 minute
 		</script>
 
 	</head>

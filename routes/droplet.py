@@ -26,6 +26,7 @@ from utils.logger import log
 import utils.docker
 import threading
 
+
 def timeout_wrapper(func, timeout_seconds=300):
     """Execute a function with a timeout, returning (success, result/error)"""
     result = [None]
@@ -869,6 +870,22 @@ def stop_instance(instance_id: str):
         os.remove(f"/flowcase/nginx/containers.d/{instance.id}.conf")
 
     db.session.delete(instance)
+    db.session.commit()
+
+    return jsonify({"success": True})
+
+
+@droplet_bp.route("/api/instance/<string:instance_id>/heartbeat", methods=["POST"])
+@login_required
+def heartbeat(instance_id: str):
+    instance = DropletInstance.query.filter_by(id=instance_id).first()
+    if not instance:
+        return jsonify({"success": False, "error": "Instance not found"}), 404
+
+    if instance.user_id != current_user.id:
+        return jsonify({"success": False, "error": "Unauthorized"}), 403
+
+    instance.last_active_at = func.now()
     db.session.commit()
 
     return jsonify({"success": True})
