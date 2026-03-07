@@ -18,6 +18,7 @@ from utils.logger import log
 import utils.docker
 import threading
 from pathlib import Path
+from datetime import datetime, timedelta
 
 
 def timeout_wrapper(func, timeout_seconds=300):
@@ -47,6 +48,76 @@ def timeout_wrapper(func, timeout_seconds=300):
 		return False, "Operation timed out"
 
 droplet_bp = Blueprint('droplet', __name__)
+
+
+def cleanup_stale_instances():
+    """Remove droplet instances that have been inactive longer than the configured timeout.
+
+    The default timeout is 30 minutes but can be overridden via the
+    ``SESSION_TIMEOUT_MINUTES`` Flask config value.
+    """
+    try:
+        from flask import current_app
+
+        timeout_minutes = current_app.config.get('SESSION_TIMEOUT_MINUTES', 30)
+        threshold = datetime.utcnow() - timedelta(minutes=timeout_minutes)
+        stale_instances = DropletInstance.query.filter(DropletInstance.updated_at < threshold).all()
+        
+        if stale_instances:
+            log("INFO", f"Cleanup: found {len(stale_instances)} stale instance(s) with threshold={threshold}")
+        
+        for instance in stale_instances:
+            log("INFO", f"Cleanup: removing stale instance {instance.id} (updated_at={instance.updated_at})")
+            # attempt to delete associated Docker container
+            try:
+                if utils.docker.docker_client:
+                    container = utils.docker.docker_client.containers.get(f"flowcase_generated_{instance.id}")
+                    container.remove(force=True)
+                    log("INFO", f"Cleanup: removed Docker container for instance {instance.id}")
+            except Exception as e:
+                log("WARNING", f"Cleanup: failed to remove Docker container for {instance.id}: {str(e)}")
+
+            # remove nginx configuration if it exists
+            config_path = f"/flowcase/nginx/containers.d/{instance.id}.conf"
+            try:
+                if os.path.exists(config_path):
+                    os.remove(config_path)
+                    log("INFO", f"Cleanup: removed nginx config for instance {instance.id}")
+            except Exception as e:
+                log("WARNING", f"Cleanup: failed to remove nginx config for {instance.id}: {str(e)}")
+
+            db.session.delete(instance)
+        db.session.commit()
+        
+        if stale_instances:
+            log("INFO", f"Cleanup: completed, removed {len(stale_instances)} instance(s)")
+    except Exception as e:
+        log("ERROR", f"Error during stale instance cleanup: {str(e)}")
+
+
+def start_stale_instance_cleaner_thread(app, interval_minutes: int = 1):
+    """Start a background thread that runs `cleanup_stale_instances` periodically.
+
+    The thread is skipped when the Flask app is running in TESTING mode.
+    """
+    if app.config.get("TESTING"):
+        log("INFO", "Skipping stale instance cleanup thread in testing mode")
+        return
+
+    def worker():
+        try:
+            with app.app_context():
+                log("INFO", f"Stale instance cleanup thread started (interval: {interval_minutes} minute(s))")
+                timeout_mins = app.config.get('SESSION_TIMEOUT_MINUTES', 30)
+                log("INFO", f"Session timeout configured: {timeout_mins} minutes")
+                while True:
+                    cleanup_stale_instances()
+                    time.sleep(interval_minutes * 60)
+        except Exception as e:
+            log("ERROR", f"Stale instance cleanup thread crashed: {str(e)}")
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
 
 @droplet_bp.route('/api/droplets', methods=['GET'])
 @login_required
@@ -84,6 +155,8 @@ def get_droplets():
 @droplet_bp.route('/api/instances', methods=['GET'])
 @login_required
 def get_instances():
+	# purge any expired sessions before returning results
+	cleanup_stale_instances()
 	instances = DropletInstance.query.filter_by(user_id=current_user.id).all()
 
 	response = {
@@ -118,6 +191,8 @@ def get_instances():
 @login_required
 def request_new_instance():
 	try:
+		# perform cleanup so inactive sessions don't count against resources
+		cleanup_stale_instances()
 		from utils.permissions import Permissions
 		droplet_id = request.json.get('droplet_id')
 		droplet = Droplet.query.filter_by(id=droplet_id).first()
@@ -224,8 +299,18 @@ def request_new_instance():
 			profilePath = profilePath.replace("{username}", current_user.username)
 			profilePath = profilePath.replace("{droplet_id}", str(droplet_id))
 
-			profilePath = Path(profilePath).expanduser().resolve()
-			
+			profilePath = Path(profilePath).expanduser()
+
+			profilePath.mkdir(parents=True, exist_ok=True)
+
+			# Match Kasm container UID
+			KASM_UID = 1000
+			KASM_GID = 1000
+
+			os.chown(profilePath, KASM_UID, KASM_GID)
+
+			profilePath = profilePath.resolve()
+
 			# Create the directory with proper error handling
 			try:
 				# Ensure parent directory exists first
@@ -616,6 +701,14 @@ def droplet(instance_id: str):
 	if instance.user_id != current_user.id:
 		return redirect("/")
 
+	# mark activity by updating the timestamp
+	try:
+		instance.updated_at = datetime.utcnow()
+		db.session.commit()
+	except Exception:
+		# ignore failures to update activity
+		pass
+
 	using_guac = False
 	guac_token = None
 	droplet = Droplet.query.filter_by(id=instance.droplet_id).first()
@@ -624,6 +717,30 @@ def droplet(instance_id: str):
 		guac_token = generate_guac_token(droplet, current_user)
 
 	return render_template('droplet.html', instance_id=instance_id, droplet=droplet, guacamole=using_guac, guac_token=guac_token)
+
+@droplet_bp.route('/api/instance/<string:instance_id>/heartbeat', methods=['POST'])
+@login_required
+def heartbeat(instance_id: str):
+	"""Called by the frontend to mark the instance as active."""
+	# purge any expired sessions first
+	cleanup_stale_instances()
+
+	instance = DropletInstance.query.filter_by(id=instance_id).first()
+	if not instance:
+		return jsonify({"success": False, "error": "Instance not found"}), 404
+
+	if instance.user_id != current_user.id:
+		return jsonify({"success": False, "error": "Unauthorized"}), 403
+
+	try:
+		instance.updated_at = datetime.utcnow()
+		db.session.commit()
+	except Exception:
+		# ignore commit errors
+		pass
+
+	return jsonify({"success": True})
+
 
 @droplet_bp.route('/api/instance/<string:instance_id>/destroy', methods=['GET'])
 @login_required
@@ -651,3 +768,39 @@ def stop_instance(instance_id: str):
 	db.session.commit()
 
 	return jsonify({"success": True})
+
+
+@droplet_bp.route('/api/debug/instances', methods=['GET'])
+@login_required
+def debug_instances():
+	"""Debug endpoint to see all instances and their timestamps (admin only)."""
+	from flask import current_app
+	from utils.permissions import Permissions
+	
+	if not Permissions.check_permission(current_user.id, Permissions.ADMIN_PANEL):
+		return jsonify({"success": False, "error": "Unauthorized"}), 403
+
+	timeout_minutes = current_app.config.get('SESSION_TIMEOUT_MINUTES', 30)
+	threshold = datetime.utcnow() - timedelta(minutes=timeout_minutes)
+	
+	instances = DropletInstance.query.all()
+	response = {
+		"success": True,
+		"now": datetime.utcnow().isoformat(),
+		"threshold": threshold.isoformat(),
+		"timeout_minutes": timeout_minutes,
+		"instances": []
+	}
+	
+	for inst in instances:
+		mins_ago = (datetime.utcnow() - inst.updated_at).total_seconds() / 60
+		response["instances"].append({
+			"id": inst.id,
+			"user_id": inst.user_id,
+			"created_at": inst.created_at.isoformat(),
+			"updated_at": inst.updated_at.isoformat(),
+			"minutes_since_update": round(mins_ago, 2),
+			"will_be_cleaned": inst.updated_at < threshold
+		})
+	
+	return jsonify(response)

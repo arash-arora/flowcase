@@ -98,11 +98,14 @@ def create_app(config=None):
 	# Register blueprints
 	from routes.auth import auth_bp
 	from routes.admin import admin_bp
-	from routes.droplet import droplet_bp
+	from routes.droplet import droplet_bp, start_stale_instance_cleaner_thread
 	
 	app.register_blueprint(auth_bp)
 	app.register_blueprint(admin_bp, url_prefix='/api/admin')
 	app.register_blueprint(droplet_bp)
+	
+	# Start background cleaner thread for inactive droplet sessions
+	start_stale_instance_cleaner_thread(app)
 	
 	@app.errorhandler(404)
 	def page_not_found(e):

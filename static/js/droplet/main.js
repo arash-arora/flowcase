@@ -81,6 +81,9 @@ function OnVNCSuccess() {
 
 	iframeFocus();
 
+	// Start a periodic heartbeat to keep the session active
+	startHeartbeat();
+
 	if (isGuacamole) return;
 
 	//quality select
@@ -159,6 +162,25 @@ function ToggleAudioButton() {
 	} else {
 		AudioStop();
 		audioIcon.classList.remove('fa-check');
+	}
+}
+
+// Heartbeat control (prevents backend from considering the session idle)
+var heartbeatInterval = null;
+
+function startHeartbeat() {
+	if (heartbeatInterval) return;
+	heartbeatInterval = setInterval(function() {
+		fetch(`/api/instance/${instanceInfo.id}/heartbeat`, {
+			method: 'POST',
+		}).catch(function() {});
+	}, 60000); // every minute
+}
+
+function stopHeartbeat() {
+	if (heartbeatInterval) {
+		clearInterval(heartbeatInterval);
+		heartbeatInterval = null;
 	}
 }
 

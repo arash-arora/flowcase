@@ -7,6 +7,7 @@ from sqlalchemy.sql import func
 from __init__ import db, bcrypt, __version__
 from models.user import User, Group
 from models.droplet import Droplet, DropletInstance
+from routes.droplet import cleanup_stale_instances
 from models.registry import Registry
 from models.network import DockerNetwork
 from models.log import Log
@@ -85,6 +86,12 @@ def api_admin_users():
 def api_admin_instances():
 	if not Permissions.check_permission(current_user.id, Permissions.VIEW_INSTANCES):
 		return jsonify({"success": False, "error": "Unauthorized"}), 403
+
+	# perform cleanup before listing
+	try:
+		cleanup_stale_instances()
+	except Exception:
+		pass
 
 	if not utils.docker.is_docker_available():
 		return jsonify({

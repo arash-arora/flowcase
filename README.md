@@ -60,6 +60,29 @@ Open your browser and navigate to:
 http://localhost:80
 ```
 
+## Session Timeout
+
+Droplet sessions are automatically cleaned up if they remain inactive for a period
+of time. Inactivity is tracked both when the user loads the droplet page _and_
+via periodic heartbeats sent by the client while a session is open. This prevents
+stale containers from lingering if a user forgets to destroy a droplet.
+
+- Default timeout: **30 minutes**
+- Heartbeats are sent every minute while the session is active
+- You can override the timeout using the `SESSION_TIMEOUT_MINUTES` config value
+  (via environment variable or `app.config`)
+
+
+## Session Timeout
+
+To prevent idle resource consumption, Flowcase will automatically terminate a
+droplet session if it has been inactive for a configurable period. By default,
+the timeout is **30 minutes**. Cleanup runs periodically in the background and
+ais also triggered whenever users list or request new instances.
+
+You can override the timeout by setting the `SESSION_TIMEOUT_MINUTES`
+configuration variable (via environment or `app.config`).
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a pull request or open an issue.
