@@ -4,7 +4,7 @@ var admin_groups = [];
 var admin_networks = [];
 
 window.addEventListener('load', () => {
-	AdminChangeTab('system', document.querySelector('.admin-modal-sidebar-button'));
+	AdminChangeTab('overview', document.querySelector('.admin-modal-sidebar-button'));
 });
 
 // Toggle admin sidebar on mobile
@@ -96,6 +96,60 @@ function AdminChangeTab(tab, element = null)
 	}
 
 	switch (tab) {
+		case 'overview':
+			header.innerText = "Overview";
+			subtext.innerText = "System metrics and usage summary.";
+
+			FetchAdminOverview(function(json) {
+				content.innerHTML = `
+				<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+					<div class="admin-modal-card">
+						<p>Total Users</p>
+						<p style="font-size: 2em; margin: 10px 0;">${json.metrics.total_users}</p>
+					</div>
+					<div class="admin-modal-card">
+						<p>Total Droplets</p>
+						<p style="font-size: 2em; margin: 10px 0;">${json.metrics.total_droplets}</p>
+					</div>
+					<div class="admin-modal-card">
+						<p>Active Instances</p>
+						<p style="font-size: 2em; margin: 10px 0;">${json.metrics.total_instances}</p>
+					</div>
+					<div class="admin-modal-card">
+						<p>CPU Cores Allocated</p>
+						<p style="font-size: 2em; margin: 10px 0;">${json.metrics.total_cpu_cores_allocated}</p>
+					</div>
+					<div class="admin-modal-card">
+						<p>Memory Allocated (MB)</p>
+						<p style="font-size: 2em; margin: 10px 0;">${json.metrics.total_memory_mb_allocated}</p>
+					</div>
+				</div>
+
+				<h3 style="margin-top: 30px;">Active Sessions</h3>
+				<table class="admin-modal-table">
+					<tr>
+						<th>Droplet</th>
+						<th>User</th>
+						<th>Time Active</th>
+						<th>Time Inactive</th>
+						<th>Actions</th>
+					</tr>
+					${json.sessions.map(session => `
+						<tr>
+							<td>${session.droplet_name}</td>
+							<td>${session.username}</td>
+							<td>${formatAdminTime(session.time_active_seconds)}</td>
+							<td>${formatAdminTime(session.time_inactive_seconds)}</td>
+							<td class="admin-modal-table-actions">
+								<i class="fas fa-trash" onclick="AdminDeleteInstance('${session.id}', true)"></i>
+							</td>
+						</tr>
+					`).join('')}
+				</table>
+				`;
+			});
+			break;
+
 		case 'users':
 			header.innerText = "Users";
 			subtext.innerText = "View and manage the users of the system.";
@@ -292,45 +346,75 @@ function AdminChangeTab(tab, element = null)
 			break;
 		case 'system':
 			header.innerText = "System";
-			subtext.innerText = "View system information.";
+			subtext.innerText = "System settings and information.";
 
 			FetchAdminSystemInfo(function(json) {
-				content.innerHTML = `
-				<h3>System Information</h3>
+				FetchAdminSettings(function(settingsJson) {
+					var settings = settingsJson.settings;
+					var workerStatusStr = "Unknown";
+					if (settings.last_cleanup_run_utc) {
+						var lastRunDate = new Date(settings.last_cleanup_run_utc + "Z");
+						var secondsAgo = Math.floor((new Date() - lastRunDate) / 1000);
+						if (secondsAgo < 120) {
+							workerStatusStr = `<span style="color: #4cd137;"><i class="fas fa-check-circle"></i> Active (${formatAdminTime(secondsAgo)} ago)</span>`;
+						} else {
+							workerStatusStr = `<span style="color: #e84118;"><i class="fas fa-exclamation-triangle"></i> Delayed (${formatAdminTime(secondsAgo)} ago)</span>`;
+						}
+					}
 
-				<div class="admin-modal-card">
-					<p>Hostname</p>
-					<textarea readonly disabled style="resize: none;">${json["system"]["hostname"]}</textarea>
-				</div>
+					content.innerHTML = `
+					<h3>Global Configuration</h3>
+					
+					<div class="admin-modal-card" style="margin-bottom: 20px;">
+						<h3>Background Worker Status</h3>
+						<p style="margin-top: 10px; font-weight: bold;">${workerStatusStr}</p>
+					</div>
 
-				<div class="admin-modal-card">
-					<p>Operating System</p>
-					<textarea readonly disabled style="resize: none;">${json["system"]["os"]}</textarea>
-				</div>
+					<div class="admin-modal-card" style="margin-bottom: 20px;">
+						<p>Session Timeout (Minutes) <span class="required">*</span></p>
+						<p style="font-size: 0.85em; color: var(--text-color-dark); margin-bottom: 10px;">Instances inactive for longer than this duration will be automatically deleted system-wide.</p>
+						<input type="number" id="admin-edit-setting-session-timeout" value="${settings.session_timeout_minutes || 30}" style="margin-bottom: 15px;">
+						<button class="button-2" onclick="SaveAdminSettings()">Save Settings</button>
+					</div>
 
-				<h3>Versions</h3>
+					<hr style="margin: 30px 0;">
 
-				<div class="admin-modal-card">
-					<p>Flowcase</p>
-					<textarea readonly disabled style="resize: none;">${json["version"]["flowcase"]}</textarea>
-				</div>
+					<h3>System Information</h3>
 
-				<div class="admin-modal-card">
-					<p>Python</p>
-					<textarea readonly disabled style="resize: none;">${json["version"]["python"]}</textarea>
-				</div>
+					<div class="admin-modal-card">
+						<p>Hostname</p>
+						<textarea readonly disabled style="resize: none;">${json["system"]["hostname"]}</textarea>
+					</div>
 
-				<div class="admin-modal-card">
-					<p>Docker</p>
-					<textarea readonly disabled style="resize: none;">${json["version"]["docker"]}</textarea>
-				</div>
+					<div class="admin-modal-card">
+						<p>Operating System</p>
+						<textarea readonly disabled style="resize: none;">${json["system"]["os"]}</textarea>
+					</div>
 
-				<div class="admin-modal-card">
-					<p>nginx</p>
-					<textarea readonly disabled style="resize: none;">${json["version"]["nginx"]}</textarea>
-				</div>
-				`;
+					<h3>Versions</h3>
+
+					<div class="admin-modal-card">
+						<p>Flowcase</p>
+						<textarea readonly disabled style="resize: none;">${json["version"]["flowcase"]}</textarea>
+					</div>
+
+					<div class="admin-modal-card">
+						<p>Python</p>
+						<textarea readonly disabled style="resize: none;">${json["version"]["python"]}</textarea>
+					</div>
+
+					<div class="admin-modal-card">
+						<p>Docker</p>
+						<textarea readonly disabled style="resize: none;">${json["version"]["docker"]}</textarea>
+					</div>
+
+					<div class="admin-modal-card">
+						<p>nginx</p>
+						<textarea readonly disabled style="resize: none;">${json["version"]["nginx"]}</textarea>
+					</div>
+					`;
 				});
+			});
 			break;
 		case 'groups':
 			header.innerText = "Groups";
@@ -489,6 +573,94 @@ function AdminChangeTab(tab, element = null)
 		});
 			break;
 	}
+}
+
+function FetchAdminOverview(callback)
+{
+	var url = "/api/admin/overview";
+	var xhr = new XMLHttpRequest();
+	xhr.open("GET", url, true);
+	xhr.setRequestHeader("Content-Type", "application/json");
+	xhr.onreadystatechange = function () {
+		if (xhr.readyState === 4) {
+			var json = JSON.parse(xhr.responseText);
+			if (json["success"] == true) {
+				callback(json);
+			}
+			else
+			{
+				if (json["error"] != null) {
+					CreateNotification(json["error"], "error");
+				}
+				else {
+					CreateNotification("An error occurred while retrieving the overview metrics. Please try again later.", "error");
+				}
+			}
+		}
+	};
+	xhr.send();
+
+	console.log("Retrieving overview metrics...");
+}
+
+function formatAdminTime(seconds) {
+    if (seconds < 60) return Math.floor(seconds) + " seconds";
+    var minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return minutes + " mins";
+    var hours = Math.floor(minutes / 60);
+    var mins = minutes % 60;
+    return hours + "h " + mins + "m";
+}
+
+function FetchAdminSettings(callback)
+{
+	var url = "/api/admin/settings";
+	var xhr = new XMLHttpRequest();
+	xhr.open("GET", url, true);
+	xhr.setRequestHeader("Content-Type", "application/json");
+	xhr.onreadystatechange = function () {
+		if (xhr.readyState === 4) {
+			var json = JSON.parse(xhr.responseText);
+			if (json["success"] == true) {
+				callback(json);
+			}
+			else
+			{
+				CreateNotification("An error occurred while retrieving settings.", "error");
+			}
+		}
+	};
+	xhr.send();
+}
+
+function SaveAdminSettings()
+{
+	var url = "/api/admin/settings";
+	var xhr = new XMLHttpRequest();
+	xhr.open("POST", url, true);
+	xhr.setRequestHeader("Content-Type", "application/json");
+	xhr.onreadystatechange = function () {
+		if (xhr.readyState === 4) {
+			var json = JSON.parse(xhr.responseText);
+			if (json["success"] == true) {
+				CreateNotification("Settings saved successfully.", "success");
+				AdminChangeTab('system');
+			}
+			else
+			{
+				if (json["error"] != null) {
+					CreateNotification(json["error"], "error");
+				} else {
+					CreateNotification("An error occurred while saving settings.", "error");
+				}
+			}
+		}
+	};
+
+	var data = JSON.stringify({
+		"session_timeout_minutes": document.getElementById('admin-edit-setting-session-timeout').value
+	});
+	xhr.send(data);
 }
 
 function FetchAdminSystemInfo(callback)
@@ -1394,7 +1566,7 @@ function AdminDeleteDroplet(droplet_id)
 	console.log("Deleting droplet...");
 }
 
-function AdminDeleteInstance(instance_id)
+function AdminDeleteInstance(instance_id, fromOverview = false)
 {
 	if (!confirm("Are you sure you want to delete this instance?")) {
 		return;
@@ -1410,9 +1582,15 @@ function AdminDeleteInstance(instance_id)
 			if (json["success"] == true) {
 				CreateNotification("Instance deleted successfully.", "success");
 				//Update instances
-				FetchAdminInstances(function(json) {
-					AdminChangeTab('instances');
-				});
+				if (fromOverview) {
+					FetchAdminOverview(function(json) {
+						AdminChangeTab('overview');
+					});
+				} else {
+					FetchAdminInstances(function(json) {
+						AdminChangeTab('instances');
+					});
+				}
 
 				GetInstances();
 			}

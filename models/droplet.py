@@ -1,5 +1,6 @@
 import uuid
 from sqlalchemy.sql import func
+from datetime import datetime
 from __init__ import db
 
 class Droplet(db.Model):
@@ -26,5 +27,5 @@ class DropletInstance(db.Model):
 	id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
 	droplet_id = db.Column(db.String(36), db.ForeignKey('droplet.id'), nullable=False)
 	user_id = db.Column(db.String(36), db.ForeignKey('user.id'), nullable=False)
-	created_at = db.Column(db.DateTime, server_default=func.now())
-	updated_at = db.Column(db.DateTime, server_default=func.now(), onupdate=func.now()) 
+	created_at = db.Column(db.DateTime, default=datetime.utcnow)
+	updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow) 

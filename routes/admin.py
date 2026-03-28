@@ -17,6 +17,59 @@ import utils.docker
 
 admin_bp = Blueprint('admin', __name__)
 
+@admin_bp.route('/overview', methods=['GET'])
+@login_required
+def api_admin_overview():
+	if not Permissions.check_permission(current_user.id, Permissions.ADMIN_PANEL):
+		return jsonify({"success": False, "error": "Unauthorized"}), 403
+
+	total_users = User.query.count()
+	total_droplets = Droplet.query.count()
+	
+	instances = DropletInstance.query.all()
+	total_instances = len(instances)
+
+	total_cpu = 0
+	total_ram = 0
+
+	from datetime import datetime
+	now = datetime.utcnow()
+	sessions = []
+
+	for instance in instances:
+		droplet = Droplet.query.filter_by(id=instance.droplet_id).first()
+		user = User.query.filter_by(id=instance.user_id).first()
+		if droplet:
+			if droplet.container_cores:
+				total_cpu += droplet.container_cores
+			if droplet.container_memory:
+				total_ram += droplet.container_memory
+
+		time_active = (now - instance.created_at).total_seconds()
+		time_inactive = (now - instance.updated_at).total_seconds()
+		
+		sessions.append({
+			"id": instance.id,
+			"droplet_name": droplet.display_name if droplet else "Unknown",
+			"username": user.username if user else "Unknown",
+			"time_active_seconds": time_active,
+			"time_inactive_seconds": time_inactive
+		})
+
+	response = {
+		"success": True,
+		"metrics": {
+			"total_users": total_users,
+			"total_droplets": total_droplets,
+			"total_instances": total_instances,
+			"total_cpu_cores_allocated": total_cpu,
+			"total_memory_mb_allocated": total_ram,
+		},
+		"sessions": sessions
+	}
+ 
+	return jsonify(response)
+
 @admin_bp.route('/system_info', methods=['GET'])
 @login_required
 def api_admin_system():
@@ -1002,3 +1055,34 @@ def api_admin_delete_network():
 	db.session.commit()
 	
 	return jsonify({"success": True})
+
+@admin_bp.route('/settings', methods=['GET', 'POST'])
+@login_required
+def api_admin_settings():
+	from models.setting import Setting
+	if not Permissions.check_permission(current_user.id, Permissions.ADMIN_PANEL):
+		return jsonify({"success": False, "error": "Unauthorized"}), 403
+
+	if request.method == 'POST':
+		timeout = request.json.get('session_timeout_minutes')
+		if timeout is not None:
+			try:
+				timeout = int(timeout)
+				if timeout < 1:
+					raise ValueError()
+				Setting.set('SESSION_TIMEOUT_MINUTES', str(timeout))
+			except ValueError:
+				return jsonify({"success": False, "error": "Invalid timeout value. Must be a positive integer."}), 400
+		return jsonify({"success": True})
+
+	from flask import current_app
+	timeout = Setting.get('SESSION_TIMEOUT_MINUTES', current_app.config.get('SESSION_TIMEOUT_MINUTES', 30))
+	last_run = Setting.get('last_cleanup_run_utc', None)
+
+	return jsonify({
+		"success": True, 
+		"settings": {
+			"session_timeout_minutes": int(timeout),
+			"last_cleanup_run_utc": last_run
+		}
+	})

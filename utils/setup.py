@@ -4,6 +4,7 @@ import string
 from __init__ import db
 from models.user import User, Group
 from models.registry import Registry
+from models.setting import Setting
 from routes.auth import create_user
 from utils.logger import log
 

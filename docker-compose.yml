@@ -9,7 +9,7 @@ services:
       - flowcase-data:/flowcase/data
       - flowcase-nginx-data:/flowcase/nginx
       - /var/run/docker.sock:/var/run/docker.sock
-      - /home/ubuntu/flowcase/profiles:/home/ubuntu/flowcase/profiles
+      - ./profiles:/home/ubuntu/flowcase/profiles
     environment:
       - FLASK_APP=run.py
       - FLASK_DEBUG=0

@@ -58,10 +58,18 @@ def cleanup_stale_instances():
     """
     try:
         from flask import current_app
+        from models.setting import Setting
 
-        timeout_minutes = current_app.config.get('SESSION_TIMEOUT_MINUTES', 30)
+        # Default to database setting, fallback to app config, then 30
+        timeout_minutes = int(Setting.get('SESSION_TIMEOUT_MINUTES', current_app.config.get('SESSION_TIMEOUT_MINUTES', 30)))
         threshold = datetime.utcnow() - timedelta(minutes=timeout_minutes)
         stale_instances = DropletInstance.query.filter(DropletInstance.updated_at < threshold).all()
+        
+        # Record that the worker successfully executed
+        try:
+            Setting.set('last_cleanup_run_utc', datetime.utcnow().isoformat())
+        except Exception:
+            pass
         
         if stale_instances:
             log("INFO", f"Cleanup: found {len(stale_instances)} stale instance(s) with threshold={threshold}")
@@ -107,8 +115,9 @@ def start_stale_instance_cleaner_thread(app, interval_minutes: int = 1):
     def worker():
         try:
             with app.app_context():
+                from models.setting import Setting
                 log("INFO", f"Stale instance cleanup thread started (interval: {interval_minutes} minute(s))")
-                timeout_mins = app.config.get('SESSION_TIMEOUT_MINUTES', 30)
+                timeout_mins = int(Setting.get('SESSION_TIMEOUT_MINUTES', app.config.get('SESSION_TIMEOUT_MINUTES', 30)))
                 log("INFO", f"Session timeout configured: {timeout_mins} minutes")
                 while True:
                     cleanup_stale_instances()
