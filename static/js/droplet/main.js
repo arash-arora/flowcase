@@ -168,13 +168,20 @@ function ToggleAudioButton() {
 // Heartbeat control (prevents backend from considering the session idle)
 var heartbeatInterval = null;
 
+function sendHeartbeatPing() {
+	fetch(`/api/instance/${instanceInfo.id}/heartbeat`, {
+		method: 'POST',
+	}).catch(function() {});
+}
+
 function startHeartbeat() {
 	if (heartbeatInterval) return;
+	
+	sendHeartbeatPing(); // Send immediately upon opening
+	
 	heartbeatInterval = setInterval(function() {
-		fetch(`/api/instance/${instanceInfo.id}/heartbeat`, {
-			method: 'POST',
-		}).catch(function() {});
-	}, 60000); // every minute
+		sendHeartbeatPing();
+	}, 30000); // every 30 seconds
 }
 
 function stopHeartbeat() {

@@ -731,8 +731,6 @@ def droplet(instance_id: str):
 @login_required
 def heartbeat(instance_id: str):
 	"""Called by the frontend to mark the instance as active."""
-	# purge any expired sessions first
-	cleanup_stale_instances()
 
 	instance = DropletInstance.query.filter_by(id=instance_id).first()
 	if not instance:
