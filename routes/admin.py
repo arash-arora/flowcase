@@ -1,6 +1,7 @@
 import platform
 import sys
 import os
+from datetime import datetime, timedelta
 from flask import Blueprint, jsonify, request
 from flask_login import login_required, current_user
 from sqlalchemy.sql import func
@@ -69,6 +70,72 @@ def api_admin_overview():
 	}
  
 	return jsonify(response)
+
+@admin_bp.route('/analytics', methods=['GET'])
+@login_required
+def api_admin_analytics():
+	if not Permissions.check_permission(current_user.id, Permissions.ADMIN_PANEL):
+		return jsonify({"success": False, "error": "Unauthorized"}), 403
+
+	# Droplet distribution
+	droplets = Droplet.query.all()
+	droplet_distribution = {}
+	for d in droplets:
+		count = DropletInstance.query.filter_by(droplet_id=d.id).count()
+		droplet_distribution[d.display_name] = count
+
+	# Group distribution (Users are mapped to groups via a comma-separated string)
+	groups = Group.query.all()
+	users = User.query.all()
+	group_distribution = {}
+	for g in groups:
+		count = 0
+		for u in users:
+			if g.id in u.get_groups():
+				count += 1
+		group_distribution[g.display_name] = count
+
+	# Resource summarize
+	instances = DropletInstance.query.all()
+	total_cpu = 0
+	total_ram = 0
+	for instance in instances:
+		droplet = Droplet.query.get(instance.droplet_id)
+		if droplet:
+			total_cpu += droplet.container_cores or 0
+			total_ram += droplet.container_memory or 0
+
+	# Usage Trend (Last 7 Days)
+	usage_trend = {}
+	today = datetime.utcnow().date()
+	for i in range(6, -1, -1):
+		day = today - timedelta(days=i)
+		count = DropletInstance.query.filter(func.date(DropletInstance.created_at) == day).count()
+		usage_trend[day.strftime('%Y-%m-%d')] = count
+
+	# System Health (Log Distribution)
+	log_stats = {
+		"INFO": Log.query.filter_by(level="INFO").count(),
+		"WARNING": Log.query.filter_by(level="WARNING").count(),
+		"ERROR": Log.query.filter_by(level="ERROR").count()
+	}
+
+	# Top Users by Instance Count
+	top_users_query = db.session.query(User.username, func.count(DropletInstance.id)).join(DropletInstance).group_by(User.username).order_by(func.count(DropletInstance.id).desc()).limit(5).all()
+	top_users = {name: count for name, count in top_users_query}
+
+	return jsonify({
+		"success": True,
+		"droplets": droplet_distribution,
+		"groups": group_distribution,
+		"resources": {
+			"cpu": total_cpu,
+			"memory": total_ram
+		},
+		"trends": usage_trend,
+		"logs": log_stats,
+		"top_users": top_users
+	})
 
 @admin_bp.route('/system_info', methods=['GET'])
 @login_required

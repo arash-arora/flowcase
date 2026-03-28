@@ -96,9 +96,143 @@ function AdminChangeTab(tab, element = null)
 	}
 
 	switch (tab) {
-		case 'overview':
-			header.innerText = "Overview";
-			subtext.innerText = "System metrics and usage summary.";
+		case 'dashboard':
+			header.innerText = "Insights & Analytics";
+			subtext.innerText = "High-level system performance and distribution metrics.";
+
+			FetchAdminAnalytics(function(json) {
+				content.innerHTML = `
+				<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 30px;">
+					<div class="admin-modal-card">
+						<p>Resource Usage (CPU)</p>
+						<p style="font-size: 2em; margin: 10px 0;">${json.resources.cpu} Cores</p>
+					</div>
+					<div class="admin-modal-card">
+						<p>Resource Usage (RAM)</p>
+						<p style="font-size: 2em; margin: 10px 0;">${json.resources.memory} MB</p>
+					</div>
+				</div>
+
+				<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px;">
+					<div class="admin-modal-card">
+						<h3>Droplet Distribution</h3>
+						<canvas id="dropletChart" style="max-height: 200px;"></canvas>
+					</div>
+					<div class="admin-modal-card">
+						<h3>System Health (Logs)</h3>
+						<canvas id="logChart" style="max-height: 200px;"></canvas>
+					</div>
+				</div>
+
+				<div class="admin-modal-card" style="margin-bottom: 20px;">
+					<h3>Usage Trend (Last 7 Days)</h3>
+					<canvas id="trendChart" style="max-height: 250px;"></canvas>
+				</div>
+
+				<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+					<div class="admin-modal-card">
+						<h3>User Group Distribution</h3>
+						<canvas id="groupChart" style="max-height: 200px;"></canvas>
+					</div>
+					<div class="admin-modal-card">
+						<h3>Top Active Users</h3>
+						<canvas id="userActivityChart" style="max-height: 200px;"></canvas>
+					</div>
+				</div>
+				`;
+
+				// Initialize Charts
+				setTimeout(() => {
+					// 1. Droplet Distribution
+					new Chart(document.getElementById('dropletChart'), {
+						type: 'doughnut',
+						data: {
+							labels: Object.keys(json.droplets),
+							datasets: [{
+								data: Object.values(json.droplets),
+								backgroundColor: ['#00a8ff', '#9c88ff', '#fbc531', '#4cd137', '#e84118']
+							}]
+						},
+						options: { responsive: true, maintainAspectRatio: false }
+					});
+
+					// 2. Log Health
+					new Chart(document.getElementById('logChart'), {
+						type: 'pie',
+						data: {
+							labels: Object.keys(json.logs),
+							datasets: [{
+								data: Object.values(json.logs),
+								backgroundColor: ['#4cd137', '#f1c40f', '#e84118'] // Info, Warning, Error
+							}]
+						},
+						options: { responsive: true, maintainAspectRatio: false }
+					});
+
+					// 3. Usage Trend
+					new Chart(document.getElementById('trendChart'), {
+						type: 'line',
+						data: {
+							labels: Object.keys(json.trends),
+							datasets: [{
+								label: 'New Instances',
+								data: Object.values(json.trends),
+								borderColor: '#00a8ff',
+								backgroundColor: 'rgba(0, 168, 255, 0.1)',
+								fill: true,
+								tension: 0.4
+							}]
+						},
+						options: { 
+							responsive: true, 
+							maintainAspectRatio: false,
+							scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } }
+						}
+					});
+
+					// 4. Group Distribution
+					new Chart(document.getElementById('groupChart'), {
+						type: 'bar',
+						data: {
+							labels: Object.keys(json.groups),
+							datasets: [{
+								label: 'Users',
+								data: Object.values(json.groups),
+								backgroundColor: '#487eb0'
+							}]
+						},
+						options: { 
+							responsive: true, 
+							maintainAspectRatio: false,
+							scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } }
+						}
+					});
+
+					// 5. User Activity (Top Users)
+					new Chart(document.getElementById('userActivityChart'), {
+						type: 'bar',
+						data: {
+							labels: Object.keys(json.top_users),
+							datasets: [{
+								label: 'Active Sessions',
+								data: Object.values(json.top_users),
+								backgroundColor: '#8c7ae6'
+							}]
+						},
+						options: { 
+							indexAxis: 'y',
+							responsive: true, 
+							maintainAspectRatio: false,
+							scales: { x: { beginAtZero: true, ticks: { stepSize: 1 } } }
+						}
+					});
+				}, 50);
+			});
+			break;
+
+		case 'activity':
+			header.innerText = "Active Monitoring";
+			subtext.innerText = "Real-time session monitoring and management.";
 
 			FetchAdminOverview(function(json) {
 				content.innerHTML = `
@@ -114,14 +248,6 @@ function AdminChangeTab(tab, element = null)
 					<div class="admin-modal-card">
 						<p>Active Instances</p>
 						<p style="font-size: 2em; margin: 10px 0;">${json.metrics.total_instances}</p>
-					</div>
-					<div class="admin-modal-card">
-						<p>CPU Cores Allocated</p>
-						<p style="font-size: 2em; margin: 10px 0;">${json.metrics.total_cpu_cores_allocated}</p>
-					</div>
-					<div class="admin-modal-card">
-						<p>Memory Allocated (MB)</p>
-						<p style="font-size: 2em; margin: 10px 0;">${json.metrics.total_memory_mb_allocated}</p>
 					</div>
 				</div>
 
@@ -601,6 +727,25 @@ function FetchAdminOverview(callback)
 	xhr.send();
 
 	console.log("Retrieving overview metrics...");
+}
+
+function FetchAdminAnalytics(callback) {
+	var url = "/api/admin/analytics";
+	var xhr = new XMLHttpRequest();
+	xhr.open("GET", url, true);
+	xhr.setRequestHeader("Content-Type", "application/json");
+	xhr.onreadystatechange = function () {
+		if (xhr.readyState === 4) {
+			var json = JSON.parse(xhr.responseText);
+			if (json["success"] == true) {
+				callback(json);
+			}
+			else {
+				CreateNotification("An error occurred while retrieving analytics data.", "error");
+			}
+		}
+	};
+	xhr.send();
 }
 
 function formatAdminTime(seconds) {
