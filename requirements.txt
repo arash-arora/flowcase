@@ -9,3 +9,4 @@ pycryptodome==3.21.0
 gunicorn==23.0.0
 authlib==1.2.1
 psycopg2-binary
+APScheduler==3.10.4

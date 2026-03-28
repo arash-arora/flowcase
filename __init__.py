@@ -6,6 +6,7 @@ from flask_migrate import Migrate
 from flask_bcrypt import Bcrypt
 from flask_login import LoginManager
 from authlib.integrations.flask_client import OAuth
+from apscheduler.schedulers.background import BackgroundScheduler
 
 __version__ = "develop"
 
@@ -98,14 +99,22 @@ def create_app(config=None):
 	# Register blueprints
 	from routes.auth import auth_bp
 	from routes.admin import admin_bp
-	from routes.droplet import droplet_bp, start_stale_instance_cleaner_thread
+	from routes.droplet import droplet_bp, cleanup_stale_instances
 	
 	app.register_blueprint(auth_bp)
 	app.register_blueprint(admin_bp, url_prefix='/api/admin')
 	app.register_blueprint(droplet_bp)
 	
-	# Start background cleaner thread for inactive droplet sessions
-	start_stale_instance_cleaner_thread(app)
+	# Start background scheduler for inactive droplet sessions cleanup
+	if not app.config.get("TESTING"):
+		scheduler = BackgroundScheduler()
+		def cleanup_job():
+			with app.app_context():
+				cleanup_stale_instances()
+		scheduler.add_job(func=cleanup_job, trigger="interval", minutes=1)
+		scheduler.start()
+	
+	@app.errorhandler(404)
 	
 	@app.errorhandler(404)
 	def page_not_found(e):
