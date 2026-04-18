@@ -78,10 +78,13 @@ def cleanup_stale_instances():
             log("INFO", f"Cleanup: removing stale instance {instance.id} (updated_at={instance.updated_at})")
             # attempt to delete associated Docker container
             try:
-                if utils.docker.docker_client:
-                    container = utils.docker.docker_client.containers.get(f"flowcase_generated_{instance.id}")
+                docker_client = utils.docker.init_docker()
+                if docker_client:
+                    container = docker_client.containers.get(f"flowcase_generated_{instance.id}")
                     container.remove(force=True)
                     log("INFO", f"Cleanup: removed Docker container for instance {instance.id}")
+                else:
+                    log("WARNING", f"Cleanup: skipping Docker container removal for {instance.id} because Docker client is not available")
             except Exception as e:
                 log("WARNING", f"Cleanup: failed to remove Docker container for {instance.id}: {str(e)}")
 
@@ -225,7 +228,8 @@ def request_new_instance():
 				return jsonify({"success": False, "error": error}), 400
 
 		# Check if docker client is available
-		if not utils.docker.docker_client:
+		docker_client = utils.docker.init_docker()
+		if not docker_client:
 			log("ERROR", "Docker client not available")
 			return jsonify({"success": False, "error": "Docker service is not available"}), 500
 
@@ -760,9 +764,12 @@ def stop_instance(instance_id: str):
 		return jsonify({"success": False, "error": "Unauthorized"}), 403
 
 	try:
-		if utils.docker.docker_client:
-			container = utils.docker.docker_client.containers.get(f"flowcase_generated_{instance.id}")
+		docker_client = utils.docker.init_docker()
+		if docker_client:
+			container = docker_client.containers.get(f"flowcase_generated_{instance.id}")
 			container.remove(force=True)
+		else:
+			log("WARNING", f"Stop instance: skipping Docker container removal for {instance.id} because Docker client is not available")
 	except Exception as e:
 		log("ERROR", f"Error removing container: {str(e)}")
 		pass

@@ -147,9 +147,13 @@ def api_admin_system():
 	nginx_version = None
 	try:
 		#get docker container
-		nginx_container = utils.docker.docker_client.containers.get("flowcase-nginx")
-		result = nginx_container.exec_run("nginx -v")
-		nginx_version = result.output.decode('utf-8').split("\n")[0].replace("nginx version: nginx/", "")
+		docker_client = utils.docker.init_docker()
+		if docker_client:
+			nginx_container = docker_client.containers.get("flowcase-nginx")
+			result = nginx_container.exec_run("nginx -v")
+			nginx_version = result.output.decode('utf-8').split("\n")[0].replace("nginx version: nginx/", "")
+		else:
+			nginx_version = "Docker not available"
 	except:
 		nginx_version = "Unable to get version"
 
@@ -230,27 +234,31 @@ def api_admin_instances():
 		try:
 			droplet = Droplet.query.filter_by(id=instance.droplet_id).first()
 			user = User.query.filter_by(id=instance.user_id).first()
-			container = utils.docker.docker_client.containers.get(f"flowcase_generated_{instance.id}")
-			response["instances"].append({
-				"id": instance.id,
-				"created_at": instance.created_at,
-				"updated_at": instance.updated_at,
-				"ip": container.attrs['NetworkSettings']['Networks']['flowcase_default_network']['IPAddress'],
-				"droplet": {
-					"id": droplet.id,
-					"display_name": droplet.display_name,
-					"description": droplet.description,
-					"container_docker_image": droplet.container_docker_image,
-					"container_docker_registry": droplet.container_docker_registry,
-					"container_cores": droplet.container_cores,
-					"container_memory": droplet.container_memory,
-					"image_path": droplet.image_path
-				},
-				"user": {
-					"id": user.id,
-					"username": user.username
-				}
-			})
+			docker_client = utils.docker.init_docker()
+			if docker_client:
+				container = docker_client.containers.get(f"flowcase_generated_{instance.id}")
+				response["instances"].append({
+					"id": instance.id,
+					"created_at": instance.created_at,
+					"updated_at": instance.updated_at,
+					"ip": container.attrs['NetworkSettings']['Networks']['flowcase_default_network']['IPAddress'],
+					"droplet": {
+						"id": droplet.id,
+						"display_name": droplet.display_name,
+						"description": droplet.description,
+						"container_docker_image": droplet.container_docker_image,
+						"container_docker_registry": droplet.container_docker_registry,
+						"container_cores": droplet.container_cores,
+						"container_memory": droplet.container_memory,
+						"image_path": droplet.image_path
+					},
+					"user": {
+						"id": user.id,
+						"username": user.username
+					}
+				})
+			else:
+				continue
 		except Exception as e:
 			# Skip this instance if we can't get container info
 			continue
@@ -425,10 +433,12 @@ def api_admin_delete_droplet():
 	instances = DropletInstance.query.filter_by(droplet_id=droplet_id).all()
 	
 	if utils.docker.is_docker_available():
+		docker_client = utils.docker.init_docker()
 		for instance in instances:
 			try:
-				container = utils.docker.docker_client.containers.get(f"flowcase_generated_{instance.id}")
-				container.remove(force=True)
+				if docker_client:
+					container = docker_client.containers.get(f"flowcase_generated_{instance.id}")
+					container.remove(force=True)
 			except Exception as e:
 				pass  # Container might not exist
 			db.session.delete(instance)
@@ -454,8 +464,10 @@ def api_admin_delete_instance():
  
 	if utils.docker.is_docker_available():
 		try:
-			container = utils.docker.docker_client.containers.get(f"flowcase_generated_{instance.id}")
-			container.remove(force=True)
+			docker_client = utils.docker.init_docker()
+			if docker_client:
+				container = docker_client.containers.get(f"flowcase_generated_{instance.id}")
+				container.remove(force=True)
 		except Exception as e:
 			pass  # Container might not exist
 	
@@ -525,10 +537,12 @@ def api_admin_delete_user():
 	instances = DropletInstance.query.filter_by(user_id=user_id).all()
 	
 	if utils.docker.is_docker_available():
+		docker_client = utils.docker.init_docker()
 		for instance in instances:
 			try:
-				container = utils.docker.docker_client.containers.get(f"flowcase_generated_{instance.id}")
-				container.remove(force=True)
+				if docker_client:
+					container = docker_client.containers.get(f"flowcase_generated_{instance.id}")
+					container.remove(force=True)
 			except Exception as e:
 				pass  # Container might not exist
 			db.session.delete(instance)

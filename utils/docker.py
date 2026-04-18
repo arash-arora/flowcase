@@ -24,7 +24,7 @@ def init_docker():
 
 def is_docker_available():
 	"""Return True if the Docker client is initialized and working"""
-	return docker_client is not None
+	return init_docker() is not None
 
 def get_docker_version():
 	"""Return Docker version or error message if not available"""
@@ -38,12 +38,13 @@ def get_docker_version():
 
 def cleanup_containers():
 	"""Delete any existing flowcase containers"""
-	if not docker_client:
+	client = init_docker()
+	if not client:
 		print("No Docker client available, skipping container cleanup")
 		return
 		
 	try:
-		containers = docker_client.containers.list(all=True)
+		containers = client.containers.list(all=True)
 		for container in containers:
 			regex = re.compile(r"flowcase_generated_([a-z0-9]+(-[a-z0-9]+)+)", re.IGNORECASE)
 			if regex.match(container.name):
