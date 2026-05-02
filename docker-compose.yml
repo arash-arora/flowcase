@@ -1,8 +1,6 @@
 services:
   web:
-    build:
-      context: .
-      dockerfile: web.Dockerfile
+    image: registry.zims.in:13254/prod/flowcase-web:latest
     container_name: flowcase-web
     restart: unless-stopped
     volumes:
